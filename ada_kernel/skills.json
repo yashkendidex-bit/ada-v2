@@ -1,0 +1,8 @@
+{
+ "celsius_to_fahrenheit": {
+  "purpose": "Convert Celsius temperature to Fahrenheit",
+  "verified_ts": 1790847381.132571,
+  "test": "{'celsius': 25}",
+  "result": "77.0"
+ }
+}

@@ -1,0 +1,162 @@
+{
+  "name": "turbocharger",
+  "units": "mm",
+  "datum": "shaft",
+  "intent": "Water-cooled ball/journal bearing turbocharger cartridge with a variable-nozzle turbine stage. Hand written to prove the assembler: every position in this file comes from a mate, never a coordinate.",
+  "parts": [
+    {
+      "id": "shaft", "skill": "shaft", "material": "steel", "label": "rotor shaft",
+      "params": {
+        "steps": [[9, 0], [9, 10], [12, 10], [12, 70], [10, 70], [10, 100], [7.9, 100], [7.9, 116]],
+        "seats": [12, 34, 58], "chamfer_mm": 0.5, "oil_groove_count": 2
+      }
+    },
+    {
+      "id": "turbine_wheel", "skill": "turbine_wheel", "material": "inconel", "label": "turbine wheel",
+      "params": {"tip_d": 52, "hub_d": 16, "height": 24, "blade_count": 10, "blade_t": 1.4, "bore_d": 0, "exducer_angle": 55}
+    },
+    {
+      "id": "seal_t", "skill": "labyrinth_seal", "material": "stainless", "label": "turbine side seal",
+      "params": {"bore_d": 12.2, "od": 24, "length": 10, "fin_count": 4, "fin_h": 1.6}
+    },
+    {
+      "id": "jb1", "skill": "journal_bearing", "material": "bronze", "label": "journal bearing, turbine end",
+      "params": {"bore_d": 12.2, "od": 20, "length": 14, "oil_hole_count": 2, "oil_hole_d": 2.4, "floating": true}
+    },
+    {
+      "id": "collar_r", "skill": "thrust_collar", "material": "steel", "label": "thrust collar, rear",
+      "params": {"bore_d": 12.2, "od": 28, "thickness": 5, "pad_count": 8, "pad_depth": 0.4}
+    },
+    {
+      "id": "thrust_plate", "skill": "thrust_collar", "material": "bronze", "label": "thrust bearing plate",
+      "params": {"bore_d": 14, "od": 34, "thickness": 4, "pad_count": 10, "pad_depth": 0.35}
+    },
+    {
+      "id": "collar_f", "skill": "thrust_collar", "material": "steel", "label": "thrust collar, front",
+      "params": {"bore_d": 12.2, "od": 28, "thickness": 5, "pad_count": 8, "pad_depth": 0.4}
+    },
+    {
+      "id": "jb2", "skill": "journal_bearing", "material": "bronze", "label": "journal bearing, compressor end",
+      "params": {"bore_d": 12.2, "od": 20, "length": 14, "oil_hole_count": 2, "oil_hole_d": 2.4, "floating": true}
+    },
+    {
+      "id": "seal_c", "skill": "labyrinth_seal", "material": "stainless", "label": "compressor side seal",
+      "params": {"bore_d": 10.2, "od": 22, "length": 9, "fin_count": 3, "fin_h": 1.4}
+    },
+    {
+      "id": "impeller", "skill": "impeller", "material": "aluminium", "label": "compressor impeller",
+      "params": {
+        "blade_count": 7, "splitter_count": 7, "hub_d": 20, "tip_d": 60, "height": 20,
+        "backsweep_deg": 38, "blade_t": 1.1, "bore_d": 10.2, "nose_d": 9
+      }
+    },
+    {
+      "id": "washer_n", "skill": "washer", "material": "steel", "label": "impeller nut washer",
+      "params": {"size": "M8", "style": "plain", "thickness": 1.6, "od": 16}
+    },
+    {
+      "id": "nut_n", "skill": "nut", "material": "steel", "label": "impeller retaining nut",
+      "params": {"size": "M8", "style": "flange", "thread_detail": "cosmetic"}
+    },
+    {
+      "id": "bearing_housing", "skill": "revolved_profile", "material": "cast_iron", "label": "centre bearing housing",
+      "params": {
+        "steps": [[46, 0], [46, 59.5], [92, 59.5], [92, 67.5]],
+        "bore_d": 34.5, "port_count": 2, "port_d": 6, "port_z_frac": 0.45,
+        "bolt_count": 6, "bolt_size": "M8", "bolt_pcd": 84, "bolt_face": "front",
+        "oil_gallery": true
+      }
+    },
+    {
+      "id": "turbine_flange", "skill": "flange", "material": "cast_iron", "label": "turbine mounting flange",
+      "params": {"od": 104, "bore_d": 40, "thickness": 6, "bolt_count": 6, "bolt_size": "M8", "bolt_pcd": 90, "gasket_groove": true}
+    },
+    {
+      "id": "back_plate", "skill": "revolved_profile", "material": "aluminium", "label": "compressor back plate",
+      "params": {"steps": [[92, 0], [92, 6]], "bore_d": 22.5, "bolt_count": 6, "bolt_size": "M8", "bolt_pcd": 84, "bolt_face": "front"}
+    },
+    {
+      "id": "turbine_housing", "skill": "volute_scroll", "material": "cast_iron", "label": "turbine housing",
+      "params": {
+        "rotor_d": 80, "tip_clearance": 0.5, "inlet_d": 40, "outlet_d": 44,
+        "a_over_r": 0.62, "wrap_deg": 340, "width": 30, "wall_mm": 5,
+        "bolt_count": 6, "bolt_size": "M8", "bolt_pcd": 90, "duct_stub_len": 24
+      }
+    },
+    {
+      "id": "compressor_cover", "skill": "volute_scroll", "material": "aluminium", "label": "compressor cover",
+      "params": {
+        "rotor_d": 64.5, "tip_clearance": 0.5, "inlet_d": 44, "outlet_d": 46,
+        "a_over_r": 0.5, "wrap_deg": 340, "width": 30, "wall_mm": 4.5,
+        "bolt_count": 6, "bolt_size": "M8", "bolt_pcd": 84, "duct_stub_len": 26
+      }
+    },
+    {
+      "id": "vane_ring", "skill": "vane_ring", "material": "inconel", "label": "variable nozzle ring",
+      "params": {"vane_count": 11, "inner_d": 54, "outer_d": 78, "height": 10, "stagger_deg": 62, "vane_t": 2.2, "ring_t": 3.5}
+    },
+    {
+      "id": "heat_shield", "skill": "heat_shield", "material": "stainless", "label": "turbine heat shield",
+      "params": {"od": 80, "bore_d": 58, "thickness": 1.2, "dish": 4, "bolt_count": 0, "bead_count": 3}
+    },
+    {
+      "id": "stud_t", "skill": "stud", "material": "stainless", "count": 6, "label": "turbine housing stud",
+      "params": {"size": "M8", "length": 44, "thread_len": 14, "thread_detail": "cosmetic"}
+    },
+    {
+      "id": "washer_t", "skill": "washer", "material": "stainless", "count": 6, "label": "turbine stud washer",
+      "params": {"size": "M8", "style": "plain", "thickness": 1.6, "od": 16}
+    },
+    {
+      "id": "nut_t", "skill": "nut", "material": "stainless", "count": 6, "label": "turbine stud nut",
+      "params": {"size": "M8", "style": "hex", "thread_detail": "cosmetic"}
+    },
+    {
+      "id": "stud_c", "skill": "stud", "material": "steel", "count": 6, "label": "compressor cover stud",
+      "params": {"size": "M8", "length": 45, "thread_len": 14, "thread_detail": "cosmetic"}
+    },
+    {
+      "id": "washer_c", "skill": "washer", "material": "steel", "count": 6, "label": "cover stud washer",
+      "params": {"size": "M8", "style": "plain", "thickness": 1.6, "od": 16}
+    },
+    {
+      "id": "nut_c", "skill": "nut", "material": "steel", "count": 6, "label": "cover stud nut",
+      "params": {"size": "M8", "style": "flange", "thread_detail": "cosmetic"}
+    },
+    {
+      "id": "pin_oil", "skill": "dowel_pin", "material": "steel", "count": 2, "label": "bearing anti-rotation pin",
+      "params": {"d": 2.4, "length": 6, "style": "solid"}
+    }
+  ],
+  "mates": [
+    {"a": "shaft.end_a", "b": "turbine_wheel.hub_face", "fit": "interference"},
+    {"a": "shaft.seats", "b": "seal_t.bore", "fit": "slip"},
+    {"a": "seal_t.front_face", "b": "jb1.rear_face", "offset_mm": 1.0, "fit": "clearance"},
+    {"a": "jb1.front_face", "b": "collar_r.rear_face", "offset_mm": 1.0, "fit": "press"},
+    {"a": "collar_r.front_face", "b": "thrust_plate.rear_face", "offset_mm": 0.5, "fit": "free"},
+    {"a": "thrust_plate.front_face", "b": "collar_f.rear_face", "offset_mm": 0.5, "fit": "press"},
+    {"a": "collar_f.front_face", "b": "jb2.rear_face", "offset_mm": 1.0, "fit": "clearance"},
+    {"a": "jb2.front_face", "b": "seal_c.rear_face", "offset_mm": 3.0, "fit": "slip"},
+    {"a": "seal_c.front_face", "b": "impeller.hub_face", "offset_mm": 5.55, "fit": "interference"},
+    {"a": "impeller.nose", "b": "washer_n.rear_face", "offset_mm": 0.5, "fit": "slip"},
+    {"a": "washer_n.front_face", "b": "nut_n.rear_face", "fit": "press"},
+
+    {"a": "shaft.mid", "b": "bearing_housing.bore_rear", "offset_mm": -52, "fit": "free"},
+    {"a": "bearing_housing.rear_face", "b": "turbine_flange.front_face", "fit": "free"},
+    {"a": "bearing_housing.front_face", "b": "back_plate.rear_face", "offset_mm": 0.5, "fit": "free"},
+    {"a": "back_plate.front_face", "b": "compressor_cover.mount_flange", "offset_mm": 0.5, "fit": "free"},
+    {"a": "turbine_flange.rear_face", "b": "turbine_housing.mount_flange", "fit": "free"},
+    {"a": "turbine_flange.rear_face", "b": "heat_shield.front_face", "fit": "free"},
+    {"a": "heat_shield.rear_face", "b": "vane_ring.front_face", "fit": "free"},
+
+    {"a": "turbine_flange.bolt_circle", "b": "stud_t.end_a", "offset_mm": -44, "fit": "interference"},
+    {"a": "turbine_housing.bolt_circle", "b": "washer_t.rear_face", "offset_mm": 30.0, "fit": "slip"},
+    {"a": "washer_t.front_face", "b": "nut_t.rear_face", "fit": "press"},
+
+    {"a": "bearing_housing.bolt_circle", "b": "stud_c.end_a", "offset_mm": -8, "fit": "interference"},
+    {"a": "stud_c.end_b", "b": "washer_c.rear_face", "fit": "slip"},
+    {"a": "washer_c.front_face", "b": "nut_c.rear_face", "fit": "press"},
+
+    {"a": "jb1.oil_port", "b": "pin_oil.end_a", "offset_mm": 0.15, "fit": "press"}
+  ]
+}

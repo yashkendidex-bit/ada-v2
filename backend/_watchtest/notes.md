@@ -1,0 +1,1 @@
+Widget assembly clearance 0.4mm

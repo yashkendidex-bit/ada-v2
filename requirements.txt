@@ -1,0 +1,39 @@
+fastapi
+uvicorn
+python-socketio
+python-multipart
+# Google GenAI SDK (v1beta)
+# Used for: text/vision brain fallback, CAD codegen fallback, browser computer-use.
+# NOT used for speech — see the httpx note at the bottom.
+google-genai
+# Computer Vision & Audio
+opencv-python
+pyaudio
+pillow
+mss
+# Browser Automation
+playwright
+python-dotenv
+# Face & Hand tracking
+mediapipe
+# CAD — the cad_v3 assembly engine (B-rep kernel, numeric solvers, mesh I/O)
+build123d
+numpy
+scipy
+trimesh
+# Web Search (keyless DuckDuckGo)
+ddgs
+# HTTP client for multi-provider fallbacks (NVIDIA NIM / Groq / Mistral)
+# Also carries the whole speech path, so no TTS/STT SDK is required:
+#   in  — Groq Whisper large-v3-turbo (providers.transcribe_audio)
+#   out — Mistral Voxtral (tts_agent, voxtral-mini-tts-latest)
+httpx
+
+# Memory — real semantic embeddings (BAAI/bge-small-en-v1.5, 384-d, ONNX, no torch).
+# REQUIRED, not optional: without it the memory subsystem falls back to a lexical
+# hash and announces that it has done so. That silent fallback is precisely the bug
+# this replaced — the old code degraded to an MD5 bag-of-words without saying
+# anything, which inverted the entire retrieval ranking.
+# Override the model with ADA_EMBED_MODEL (e.g. BAAI/bge-base-en-v1.5).
+fastembed
+

@@ -1,0 +1,339 @@
+{
+ "name": "helicopter_main_rotor_head",
+ "datum": "mast_shaft",
+ "parts": [
+  {
+   "id": "mast_shaft",
+   "skill": "shaft",
+   "params": {
+    "steps": [
+     [
+      42,
+      0
+     ],
+     [
+      42,
+      120
+     ],
+     [
+      52,
+      120
+     ],
+     [
+      52,
+      540
+     ],
+     [
+      62,
+      540
+     ],
+     [
+      62,
+      640
+     ]
+    ],
+    "seats": [
+     40,
+     500,
+     550
+    ],
+    "chamfer_mm": 0.6
+   },
+   "material": "steel",
+   "count": 1,
+   "label": "main rotor mast"
+  },
+  {
+   "id": "mast_housing",
+   "skill": "revolved_profile",
+   "params": {
+    "profile": "explicit",
+    "steps": [
+     [
+      126,
+      0
+     ],
+     [
+      126,
+      44
+     ],
+     [
+      106,
+      44
+     ],
+     [
+      106,
+      280
+     ]
+    ],
+    "bore_d": 72,
+    "bolt_count": 3,
+    "bolt_pcd": 240,
+    "bolt_size": "M10",
+    "bolt_face": "front"
+   },
+   "material": "aluminium",
+   "count": 1,
+   "label": "swashplate support housing"
+  },
+  {
+   "id": "actuator",
+   "skill": "revolved_profile",
+   "params": {
+    "profile": "explicit",
+    "steps": [
+     [
+      44,
+      0
+     ],
+     [
+      44,
+      84
+     ],
+     [
+      18,
+      84
+     ],
+     [
+      18,
+      120
+     ]
+    ],
+    "bore_d": 0,
+    "od": 58.4
+   },
+   "material": "steel",
+   "count": 3,
+   "label": "swashplate servo actuator"
+  },
+  {
+   "id": "fixed_ring",
+   "skill": "flange",
+   "params": {
+    "od": 320,
+    "bore_d": 90.3,
+    "thickness": 24,
+    "bolt_count": 3,
+    "bolt_pcd": 240,
+    "bolt_size": "M10",
+    "gasket_groove": false
+   },
+   "material": "steel",
+   "count": 1,
+   "label": "stationary swashplate ring"
+  },
+  {
+   "id": "swash_bearing",
+   "skill": "ball_bearing",
+   "params": {
+    "bore_d": 92,
+    "od": 118,
+    "width": 28,
+    "ball_count": 14,
+    "contact_angle": 25,
+    "shielded": true
+   },
+   "material": "steel",
+   "count": 1,
+   "label": "swashplate thrust bearing"
+  },
+  {
+   "id": "rot_ring",
+   "skill": "flange",
+   "params": {
+    "od": 320,
+    "bore_d": 126.6,
+    "thickness": 28,
+    "bolt_count": 4,
+    "bolt_pcd": 200,
+    "bolt_size": "M8",
+    "gasket_groove": false
+   },
+   "material": "steel",
+   "count": 1,
+   "label": "rotating swashplate ring"
+  },
+  {
+   "id": "hub",
+   "skill": "flange",
+   "params": {
+    "od": 340,
+    "bore_d": 320.6,
+    "thickness": 56,
+    "bolt_count": 4,
+    "bolt_pcd": 272,
+    "bolt_size": "M8",
+    "gasket_groove": false
+   },
+   "material": "titanium",
+   "count": 1,
+   "label": "rotor hub"
+  },
+  {
+   "id": "blade_grip",
+   "skill": "blade_grip",
+   "params": {
+    "grip_d": 64,
+    "length": 125,
+    "trunnion_d": 30,
+    "trunnion_len": 36,
+    "horn_reach": 110,
+    "horn_drop": 34,
+    "horn_width": 26,
+    "horn_thickness": 22
+   },
+   "material": "titanium",
+   "count": 4,
+   "label": "blade grip with pitch horn"
+  },
+  {
+   "id": "main_blade",
+   "skill": "main_blade",
+   "params": {
+    "span": 1500,
+    "root_chord": 150,
+    "tip_chord": 105,
+    "thickness": 26,
+    "twist_deg": -9,
+    "root_thickness": 14
+   },
+   "material": "aluminium",
+   "count": 4,
+   "label": "main rotor blade"
+  },
+  {
+   "id": "pitch_link",
+   "skill": "pitch_link",
+   "params": {
+    "length": 52,
+    "eye_od": 24,
+    "eye_id": 10.5,
+    "rod_d": 14
+   },
+   "material": "steel",
+   "count": 4,
+   "label": "pitch link"
+  },
+  {
+   "id": "mast_cap",
+   "skill": "revolved_profile",
+   "params": {
+    "profile": "explicit",
+    "steps": [
+     [
+      78,
+      0
+     ],
+     [
+      78,
+      18
+     ]
+    ],
+    "bore_d": 62.4
+   },
+   "material": "aluminium",
+   "count": 1,
+   "label": "mast top cap"
+  }
+ ],
+ "mates": [
+  {
+   "a": "mast_housing.bore_rear",
+   "b": "mast_shaft.seats",
+   "kind": "cylindrical",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "slip"
+  },
+  {
+   "a": "actuator.rear_face",
+   "b": "mast_housing.bolt_circle",
+   "kind": "rigid",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "press"
+  },
+  {
+   "a": "actuator.front_face",
+   "b": "fixed_ring.rear_face",
+   "kind": "rigid",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "slip"
+  },
+  {
+   "a": "swash_bearing.rear_face",
+   "b": "fixed_ring.front_face",
+   "kind": "rigid",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "press"
+  },
+  {
+   "a": "rot_ring.rear_face",
+   "b": "swash_bearing.front_face",
+   "kind": "rigid",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "press"
+  },
+  {
+   "a": "rot_ring.bore",
+   "b": "mast_shaft.seats",
+   "kind": "cylindrical",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "interference"
+  },
+  {
+   "a": "hub.bore",
+   "b": "mast_shaft.seats",
+   "kind": "cylindrical",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "interference"
+  },
+  {
+   "a": "blade_grip.rear_face",
+   "b": "hub.bolt_circle",
+   "kind": "rigid",
+   "offset_mm": 0.0,
+   "angle_deg": 90.0,
+   "fit": "press"
+  },
+  {
+   "a": "main_blade.rear_face",
+   "b": "blade_grip.blade_seat",
+   "kind": "rigid",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "press"
+  },
+  {
+   "a": "pitch_link.rear_face",
+   "b": "rot_ring.bolt_circle",
+   "kind": "revolute",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "slip"
+  },
+  {
+   "a": "pitch_link.front_face",
+   "b": "blade_grip.horn_seat",
+   "kind": "revolute",
+   "offset_mm": 0.2,
+   "angle_deg": 0.0,
+   "fit": "slip"
+  },
+  {
+   "a": "mast_cap.rear_face",
+   "b": "mast_shaft.end_b",
+   "kind": "rigid",
+   "offset_mm": 0.0,
+   "angle_deg": 0.0,
+   "fit": "slip"
+  }
+ ],
+ "intent": "Four-blade main rotor head with a swashplate flight-control stage. Power flows up the mast_shaft from the transmission: the shaft turns the hub, four blade_grips on trunnion seats carried on the hub top face, and four main_blade roots bolted to the grip outer ends. Flight control enters from below: three vertical servomechanism actuators stand on the mast_housing top face and push on the stationary swashplate ring (fixed_ring), which is deliberately non-rotating. An angular-contact thrust bearing (swash_bearing) sandwiches the fixed ring against the rotating swashplate ring (rot_ring), which is shrink-clamped to the mast so it turns and slides with it. Tilting or lifting the fixed ring tilts or lifts the rotating ring through the bearing, and four pitch_links running from the rotating ring's upper bolt circle up to the horns on each blade_grip convert that motion into blade feathering about the spanwise trunnion axes; the trunnion press fits double as the flap/feather elastomeric-equivalent hinges. The assembly is modelled at neutral pitch.",
+ "units": "mm"
+}

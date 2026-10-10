@@ -1,0 +1,12 @@
+{
+ "id": "v1",
+ "ts": 1787388197.0323992,
+ "label": "initial design",
+ "model_name": "ferrari gearbox",
+ "visible_ids": [
+  "sun_gear",
+  "planet_gear_1",
+  "planet_gear_2"
+ ],
+ "colors": {}
+}

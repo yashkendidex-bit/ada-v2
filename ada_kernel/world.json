@@ -1,0 +1,9 @@
+{
+ "routines": {
+  "nozzle_c": 240,
+  "bed_c": 80,
+  "material": "PETG"
+ },
+ "projects": {},
+ "deviations": []
+}

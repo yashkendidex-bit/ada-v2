@@ -1,0 +1,12 @@
+{
+ "id": "v3",
+ "ts": 1787335427.901629,
+ "label": "ferrari red",
+ "model_name": "gearbox",
+ "visible_ids": [
+  "sun_gear"
+ ],
+ "colors": {
+  "sun_gear": "#ff2800"
+ }
+}

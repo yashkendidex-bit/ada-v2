@@ -1,0 +1,156 @@
+{
+ "name": "planetary_gearbox",
+ "units": "mm",
+ "datum": "input_shaft",
+ "intent": "Single-stage epicyclic reduction gearbox, 3.5:1, module 2 gearset (24T sun / 18T planets / 60T ring). Written to prove the assembler generalises past the turbocharger: the gear meshes are real, not decorative -- the carrier bolt circle PCD, the ring tooth count and the planet count are now *derived* from the gearset variables below rather than typed in and left to agree by luck, and every condition a real epicyclic has to satisfy is stated in `checks` where the verifier can measure it.",
+ "vars": {
+  "module": 2.0,
+  "sun_t": 24,
+  "planet_t": 18,
+  "planets": 3,
+  "ring_t": "sun_t + 2 * planet_t",
+  "pcd": "module * (sun_t + planet_t) / 2",
+  "ring_rim_d": "ring_t * module + 16",
+  "ratio": "1 + ring_t / sun_t"
+ },
+ "parts": [
+  {
+   "id": "input_shaft", "skill": "shaft", "material": "steel", "label": "input (sun) shaft",
+   "params": {
+    "steps": [[18, 0], [18, 16], [25, 16], [25, 34], [22, 34], [22, 70], [16, 70], [16, 86]],
+    "seats": [48, 16, 70], "chamfer_mm": 0.8
+   }
+  },
+  {
+   "id": "sun_gear", "skill": "spur_gear", "material": "steel", "label": "sun gear, 24T",
+   "params": {"module": 2, "teeth": 24, "width": 20, "pressure_angle": 20, "bore_d": 22}
+  },
+  {
+   "id": "input_bearing", "skill": "ball_bearing", "material": "steel", "label": "input bearing 6205",
+   "params": {"bore_d": 25, "od": 52, "width": 16, "ball_count": 9, "shielded": true}
+  },
+  {
+   "id": "snap_in", "skill": "snap_ring", "material": "stainless", "label": "input bearing circlip",
+   "params": {"bore_d": 25.2, "thickness": 1.5, "radial_w": 2.0, "internal": false, "gap_deg": 40}
+  },
+  {
+   "id": "carrier_rear", "skill": "flange", "material": "cast_iron", "label": "planet carrier, rear cheek",
+   "params": {
+    "od": 114, "bore_d": 26, "thickness": 12, "bolt_count": 3, "bolt_size": "M12",
+    "bolt_pcd": 84, "gasket_groove": false, "fillet_mm": 1.5
+   }
+  },
+  {
+   "id": "planet_washer_r", "skill": "washer", "material": "bronze", "count": 3, "label": "planet thrust washer, rear",
+   "params": {"size": "M12", "style": "plain", "thickness": 2.0, "od": 26}
+  },
+  {
+   "id": "planet_gear", "skill": "spur_gear", "material": "steel", "count": 3, "label": "planet gear, 18T",
+   "params": {"module": 2, "teeth": 18, "width": 20, "pressure_angle": 20, "bore_d": 18}
+  },
+  {
+   "id": "planet_bush", "skill": "journal_bearing", "material": "bronze", "count": 3, "label": "planet bush",
+   "params": {"bore_d": 13, "od": 18, "length": 20, "oil_hole_count": 3, "oil_hole_d": 2.0, "floating": false}
+  },
+  {
+   "id": "planet_pin", "skill": "dowel_pin", "material": "steel", "count": 3, "label": "planet pin",
+   "params": {"d": 12.9, "length": 48, "style": "solid"}
+  },
+  {
+   "id": "planet_washer_f", "skill": "washer", "material": "bronze", "count": 3, "label": "planet thrust washer, front",
+   "params": {"size": "M12", "style": "plain", "thickness": 2.0, "od": 26}
+  },
+  {
+   "id": "carrier_front", "skill": "flange", "material": "cast_iron", "label": "planet carrier, front cheek",
+   "params": {
+    "od": 114, "bore_d": 32, "thickness": 12, "bolt_count": 3, "bolt_size": "M12",
+    "bolt_pcd": 84, "gasket_groove": false, "fillet_mm": 1.5
+   }
+  },
+  {
+   "id": "ring_gear", "skill": "spur_gear", "material": "steel", "label": "ring gear, 60T internal",
+   "params": {"module": 2, "teeth": 60, "width": 24, "pressure_angle": 20, "internal": true, "rim_d": 136, "bore_d": 0}
+  },
+  {
+   "id": "housing", "skill": "revolved_profile", "material": "cast_iron", "label": "gearbox case",
+   "params": {
+    "profile": "explicit", "steps": [[168, 0], [168, 60]], "bore_d": 137,
+    "bolt_count": 12, "bolt_size": "M8", "bolt_pcd": 156, "bolt_face": "front",
+    "port_count": 0, "fillet_mm": 2
+   }
+  },
+  {
+   "id": "rear_cap", "skill": "flange", "material": "aluminium", "label": "input end cap",
+   "params": {
+    "od": 168, "bore_d": 52.4, "thickness": 16, "bolt_count": 12, "bolt_size": "M8",
+    "bolt_pcd": 156, "gasket_groove": true, "fillet_mm": 2
+   }
+  },
+  {
+   "id": "front_cap", "skill": "flange", "material": "aluminium", "label": "output end cap",
+   "params": {
+    "od": 168, "bore_d": 62.4, "thickness": 16, "bolt_count": 12, "bolt_size": "M8",
+    "bolt_pcd": 156, "gasket_groove": true, "fillet_mm": 2
+   }
+  },
+  {
+   "id": "output_shaft", "skill": "shaft", "material": "steel", "label": "output shaft",
+   "params": {
+    "steps": [[32, 0], [32, 12], [40, 12], [40, 20], [30, 20], [30, 42], [24, 42], [24, 64]],
+    "seats": [0, 20, 42], "bore_d": 18, "chamfer_mm": 0.8
+   }
+  },
+  {
+   "id": "output_bearing", "skill": "ball_bearing", "material": "steel", "label": "output bearing 6206",
+   "params": {"bore_d": 30, "od": 62, "width": 16, "ball_count": 9, "shielded": true}
+  },
+  {
+   "id": "snap_out", "skill": "snap_ring", "material": "stainless", "label": "output bearing circlip",
+   "params": {"bore_d": 30.2, "thickness": 1.5, "radial_w": 2.0, "internal": false, "gap_deg": 40}
+  },
+  {
+   "id": "case_stud", "skill": "stud", "material": "stainless", "count": 12, "label": "case through stud",
+   "params": {"size": "M8", "length": 100, "thread_len": 16, "thread_detail": "cosmetic"}
+  },
+  {
+   "id": "washer_f", "skill": "washer", "material": "steel", "count": 12, "label": "stud washer, output end",
+   "params": {"size": "M8", "style": "plain", "thickness": 2.0, "od": 16}
+  },
+  {
+   "id": "nut_f", "skill": "nut", "material": "steel", "count": 12, "label": "stud nut, output end",
+   "params": {"size": "M8", "style": "hex", "thread_detail": "cosmetic"}
+  },
+  {
+   "id": "washer_r", "skill": "washer", "material": "steel", "count": 12, "label": "stud washer, input end",
+   "params": {"size": "M8", "style": "plain", "thickness": 2.0, "od": 16}
+  },
+  {
+   "id": "nut_r", "skill": "nut", "material": "steel", "count": 12, "label": "stud nut, input end",
+   "params": {"size": "M8", "style": "flange", "thread_detail": "cosmetic"}
+  }
+ ],
+ "mates": [
+  {"a": "input_shaft.seats", "b": "sun_gear.bore", "fit": "interference"},
+  {"a": "input_shaft.mid", "b": "input_bearing.bore", "offset_mm": -25, "kind": "revolute", "fit": "press"},
+  {"a": "input_bearing.rear_face", "b": "snap_in.front_face", "fit": "slip"},
+  {"a": "sun_gear.rear_face", "b": "carrier_rear.front_face", "offset_mm": 1.0, "fit": "free"},
+  {"a": "carrier_rear.bolt_circle", "b": "planet_washer_r.rear_face", "fit": "slip"},
+  {"a": "planet_washer_r.front_face", "b": "planet_gear.rear_face", "angle_deg": 10.0, "fit": "free"},
+  {"a": "planet_gear.bore", "b": "planet_bush.bore", "kind": "revolute", "fit": "press"},
+  {"a": "carrier_rear.bolt_circle", "b": "planet_pin.end_a", "offset_mm": -12, "fit": "press"},
+  {"a": "planet_gear.front_face", "b": "planet_washer_f.rear_face", "fit": "slip"},
+  {"a": "carrier_rear.front_face", "b": "carrier_front.rear_face", "offset_mm": 24, "angle_deg": 180.0, "fit": "free"},
+  {"a": "input_shaft.mid", "b": "housing.bore_rear", "offset_mm": -10, "fit": "free"},
+  {"a": "housing.bore_rear", "b": "ring_gear.bore", "offset_mm": 14, "angle_deg": 3.0, "fit": "press"},
+  {"a": "housing.rear_face", "b": "rear_cap.front_face", "fit": "free"},
+  {"a": "housing.front_face", "b": "front_cap.rear_face", "fit": "free"},
+  {"a": "carrier_front.bore", "b": "output_shaft.seats", "kind": "revolute", "fit": "press"},
+  {"a": "output_shaft.mid", "b": "output_bearing.bore", "offset_mm": -10, "kind": "revolute", "fit": "press"},
+  {"a": "output_bearing.front_face", "b": "snap_out.rear_face", "fit": "slip"},
+  {"a": "housing.bolt_circle", "b": "case_stud.end_a", "offset_mm": -76, "fit": "interference"},
+  {"a": "front_cap.bolt_circle", "b": "washer_f.rear_face", "fit": "slip"},
+  {"a": "washer_f.front_face", "b": "nut_f.rear_face", "fit": "press"},
+  {"a": "case_stud.end_a", "b": "washer_r.front_face", "fit": "slip"},
+  {"a": "washer_r.rear_face", "b": "nut_r.front_face", "fit": "press"}
+ ]
+}

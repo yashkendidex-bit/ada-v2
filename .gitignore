@@ -1,0 +1,65 @@
+# Environment and Secrets (Strictly excluded)
+.env
+.env.*
+*.env
+*.env.*
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.pytest_cache/
+.pytest_tmp/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Node.js dependencies & builds
+node_modules/
+dist/
+dist-electron/
+release/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# External OSINT binaries & generated outputs
+backend/tools_bin/
+backend/out_ada/
+backend/reference.jpg
+backend/settings.json
+backend/last_cad_generation.json
+long_term_memory/
+projects/
+output.stl
+cad_outputs/
+out/
+out2/
+out_ada/
+_archive/
+logs/
+trace.txt
+
+# Local SQLite Databases & Backups
+*.db
+*.db-wal
+*.db-shm
+*.bak
+
+# IDE & Editor
+.vscode/
+.idea/
+.claude/
+.workbuddy-ai/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db

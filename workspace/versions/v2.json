@@ -1,0 +1,36 @@
+{
+ "id": "v2",
+ "ts": 1787387230.2024589,
+ "label": "after surgery",
+ "model_name": "ferrari gearbox",
+ "visible_ids": [
+  "sun_gear",
+  "planet_gear_1",
+  "planet_gear_2",
+  "planet_gear_3",
+  "housing",
+  "part_9",
+  "part_10",
+  "part_11",
+  "part_12",
+  "part_13",
+  "part_14",
+  "part_15",
+  "part_16",
+  "part_17",
+  "part_18",
+  "part_19",
+  "part_20",
+  "part_21",
+  "part_22",
+  "part_23",
+  "part_24",
+  "part_25",
+  "part_26",
+  "part_27",
+  "part_28"
+ ],
+ "colors": {
+  "sun_gear": "#ff2800"
+ }
+}
