@@ -15,7 +15,7 @@
  *     window, and a 30 s cap stops a stuck mic wedging the turn.
  */
 
-import { BACKEND_URL } from "./socket";
+import { BACKEND_URL } from "./ada-state";
 
 export type MicStatus = "listening" | "hearing" | "transcribing";
 

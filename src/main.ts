@@ -1,421 +1,280 @@
 /**
- * A.D.A GUI entry point.
+ * JARVIS — Main entry point.
  *
- * The orb is the face. Its state is derived from what A.D.A is actually
- * doing: connection, playback, a turn in flight, mute, or listening. The
- * backend's status messages are free text, so the client keeps its own
- * state rather than parsing them.
+ * Wires together the orb visualization, WebSocket communication,
+ * speech recognition, and audio playback into a single experience.
  */
 
-import "./style.css";
 import { createOrb, type OrbState } from "./orb";
-import { VoicePlayer } from "./player";
-import { createMic, type MicStatus } from "./mic";
-import {
-  createLink,
-  type AdaQuestionEvent,
-  type AuthFrameEvent,
-  type AuthStatusEvent,
-  type ErrorEvent,
-  type StatusEvent,
-  type TranscriptionEvent,
-  type TtsAudioEvent,
-} from "./socket";
+import { createAudioPlayer, createMicMonitor } from "./voice";
+import { createVoiceInput } from "./ada-voice";
+import { createSocket } from "./ws";
+import "./style.css";
 
-// ── DOM ────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// State machine
+// ---------------------------------------------------------------------------
 
-function el<T extends HTMLElement>(id: string): T {
-  const node = document.getElementById(id);
-  if (!node) throw new Error(`missing element #${id}`);
-  return node as T;
+type State = "idle" | "listening" | "thinking" | "speaking" | "compacting";
+let currentState: State = "idle";
+let isMuted = false;
+
+const statusEl = document.getElementById("status-text")!;
+const errorEl = document.getElementById("error-text")!;
+
+function showError(msg: string) {
+  errorEl.textContent = msg;
+  errorEl.style.opacity = "1";
+  setTimeout(() => {
+    errorEl.style.opacity = "0";
+  }, 5000);
 }
 
-const canvas = el<HTMLCanvasElement>("orb-canvas");
-const connDot = el<HTMLDivElement>("conn");
-const btnMute = el<HTMLButtonElement>("btn-mute");
-const btnStop = el<HTMLButtonElement>("btn-stop");
-const statusEl = el<HTMLDivElement>("status-text");
-const clarifyEl = el<HTMLDivElement>("clarify");
-const clarifyQ = el<HTMLDivElement>("clarify-q");
-const clarifyChoices = el<HTMLDivElement>("clarify-choices");
-const transcriptEl = el<HTMLDivElement>("transcript");
-const composer = el<HTMLFormElement>("composer");
-const composerInput = el<HTMLInputElement>("composer-input");
-const toastEl = el<HTMLDivElement>("toast");
-const authLockEl = el<HTMLDivElement>("auth-lock");
-const authFrameEl = el<HTMLImageElement>("auth-frame");
-const authMsgEl = el<HTMLDivElement>("auth-msg");
+function updateStatus(state: State) {
+  const labels: Record<State, string> = {
+    idle: "",
+    listening: "listening...",
+    thinking: "thinking...",
+    speaking: "",
+    compacting: "",          // the notice banner carries the words; the orb carries the state
+  };
+  statusEl.textContent = labels[state];
+}
 
-// ── Components ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Init components
+// ---------------------------------------------------------------------------
 
+const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
 const orb = createOrb(canvas);
-const player = new VoicePlayer();
-orb.setPlaybackAnalyser(player.analyser);
-const link = createLink();
 
-// ── State ──────────────────────────────────────────────────────────────────
+const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+const WS_URL = `${wsProto}//${window.location.host}/ws/voice`;
+const socket = createSocket(WS_URL);
 
-let connected = false;
-let muted = false;
-let thinking = false;
-let thinkingTimer: number | null = null;
-let micStatus: MicStatus = "listening";
-let interim = "";
-let speechGen = 0;          // bumps once per new turn on the backend
-let lastChunkId = 0;        // drops stale chunks inside a turn
-let suppressSpeech = false; // set by barge-in / stop; cleared by a newer turn
-let clarifyId: string | number | null = null;
-let toastTimer: number | null = null;
-let locked = false;         // face auth is on and has not matched yet
-let unlockTimer: number | null = null;
+const audioPlayer = createAudioPlayer();
+orb.setAnalyser(audioPlayer.getAnalyser());
 
-// ── Derived state ──────────────────────────────────────────────────────────
+let muteMicDuringSpeech = false;
 
-function orbState(): OrbState {
-  if (!connected) return "offline";
-  if (locked) return "idle";
-  if (player.playing) return "speaking";
-  if (thinking) return "thinking";
-  if (muted) return "idle";
-  return "listening";
-}
+function transition(newState: State) {
+  if (newState === currentState) return;
+  currentState = newState;
+  const btn = document.getElementById("hush");
+  if (btn) (btn as HTMLButtonElement).hidden = newState !== "speaking";
+  orb.setState(newState as OrbState);
+  updateStatus(newState);
 
-function statusText(): string {
-  if (!connected) return "reconnecting";
-  if (locked) return "locked";
-  if (player.playing) return "speaking";
-  if (thinking) return "thinking";
-  if (muted) return "muted";
-  if (micStatus === "hearing") return interim ? `"${interim}"` : "hearing you";
-  if (micStatus === "transcribing") return "transcribing";
-  return "listening";
-}
-
-let lastOrbState: OrbState | null = null;
-let lastStatus = "";
-
-/** Re-derive everything visible from state. Cheap; only touches the DOM on change. */
-function refresh(): void {
-  const s = orbState();
-  if (s !== lastOrbState) {
-    orb.setState(s);
-    lastOrbState = s;
-  }
-  const stopVisible = player.playing;
-  if (btnStop.hidden === stopVisible) btnStop.hidden = !stopVisible;
-  btnMute.classList.toggle("muted", muted);
-  btnMute.setAttribute("aria-pressed", String(muted));
-  connDot.dataset.state = connected ? "on" : "off";
-  const text = statusText();
-  if (text !== lastStatus) {
-    statusEl.textContent = text;
-    lastStatus = text;
-  }
-}
-
-function beginThinking(): void {
-  thinking = true;
-  if (thinkingTimer !== null) clearTimeout(thinkingTimer);
-  // Safety valve: a reply that never arrives must not leave the orb stuck.
-  thinkingTimer = window.setTimeout(() => {
-    thinking = false;
-    thinkingTimer = null;
-    refresh();
-  }, 45_000);
-  refresh();
-}
-
-function endThinking(): void {
-  if (!thinking) return;
-  thinking = false;
-  if (thinkingTimer !== null) { clearTimeout(thinkingTimer); thinkingTimer = null; }
-  refresh();
-}
-
-// ── Transcript ─────────────────────────────────────────────────────────────
-
-let lastSender: string | null = null;
-let lastBody: HTMLSpanElement | null = null;
-
-function appendLine(sender: string, text: string, streaming = false): void {
-  if (streaming && lastBody && lastSender === sender) {
-    lastBody.textContent = (lastBody.textContent ?? "") + text;
+  if (isMuted) return;
+  if (newState === "speaking" && muteMicDuringSpeech) {
+    voiceInput.pause();
   } else {
-    const row = document.createElement("div");
-    row.className = `line ${sender === "You" ? "you" : sender === "System" ? "system" : "ada"}`;
-    const who = document.createElement("span");
-    who.className = "who";
-    who.textContent = sender;
-    const body = document.createElement("span");
-    body.className = "body";
-    body.textContent = text;
-    row.append(who, body);
-    transcriptEl.append(row);
-    lastBody = body;
-    lastSender = sender;
-    while (transcriptEl.childElementCount > 80) transcriptEl.firstElementChild?.remove();
-  }
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
-}
-
-function showToast(msg: string): void {
-  toastEl.textContent = msg;
-  toastEl.hidden = false;
-  if (toastTimer !== null) clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => { toastEl.hidden = true; }, 4200);
-}
-
-// ── Clarifying questions ───────────────────────────────────────────────────
-
-function showClarify(q: AdaQuestionEvent): void {
-  clarifyId = q.id;
-  clarifyQ.textContent = q.question;
-  clarifyChoices.replaceChildren();
-  const choices = q.choices ?? [];
-  if (choices.length === 0) {
-    const hint = document.createElement("span");
-    hint.className = "hint";
-    hint.textContent = "Answer by voice or in the box below.";
-    clarifyChoices.append(hint);
-  }
-  for (const c of choices) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = c;
-    b.addEventListener("click", () => answerClarify(c));
-    clarifyChoices.append(b);
-  }
-  clarifyEl.hidden = false;
-  endThinking();
-}
-
-function clearClarify(): void {
-  clarifyId = null;
-  clarifyEl.hidden = true;
-}
-
-function answerClarify(answer: string): void {
-  if (clarifyId === null || !connected) return;
-  link.emit("answer_question", { id: clarifyId, answer });
-  appendLine("You", answer);
-  clearClarify();
-  beginThinking();
-  orb.pulse();
-}
-
-// ── Speech control ─────────────────────────────────────────────────────────
-
-/** Stop A.D.A mid-sentence and report how much of each utterance was heard. */
-function stopSpeaking(): void {
-  suppressSpeech = true;
-  if (player.busy) {
-    const played = player.stopAll(true);
-    if (connected) {
-      for (const p of played) link.emit("tts_played", p);
-    }
-  }
-  endThinking();
-  refresh();
-}
-
-function playBackchannel(clip: string): void {
-  try {
-    const a = new Audio(`${import.meta.env.BASE_URL}audio/backchannel_${clip}.mp3`);
-    a.volume = 0.5;
-    void a.play().catch(() => {});
-  } catch {
-    // A missing soft clip is never worth an error.
+    voiceInput.resume();
   }
 }
 
-// ── Sending input ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Voice input
+// ---------------------------------------------------------------------------
 
-function sendUserText(raw: string): void {
-  const text = raw.trim();
-  if (!text) return;
-  if (!connected) {
-    showToast("A.D.A is offline - reconnecting");
-    return;
-  }
-  // The lock screen covers the composer and already says what is needed.
-  if (locked) return;
-  suppressSpeech = false;
-  clearClarify();
-  link.emit("user_input", { text });
-  appendLine("You", text);
-  beginThinking();
-  orb.pulse();
-}
-
-// ── Microphone ─────────────────────────────────────────────────────────────
-
-const mic = createMic({
-  onLevel: (rms) => orb.setMicLevel(rms),
-  onInterim: (text) => {
-    interim = text;
-    refresh();
+const voiceInput = createVoiceInput(
+  (text: string) => {
+    // The server decides whether this is echo, a barge-in, or a new turn.
+    micMonitor.sawSpeech();
+    socket.send({ type: "transcript", text, isFinal: true });
   },
-  onBargeIn: () => stopSpeaking(),
-  onUtterance: (text) => sendUserText(text),
-  onBackchannel: (clip) => playBackchannel(clip),
-  onStatus: (s) => {
-    if (s === micStatus) return;
-    micStatus = s;
-    if (s !== "hearing") interim = "";
-    refresh();
+  (text: string) => {
+    micMonitor.sawSpeech();
+    socket.send({ type: "interim", text });
   },
-  onError: (msg) => showToast(msg),
-  isAdaSpeaking: () => player.playing,
-});
-
-function toggleMute(): void {
-  muted = !muted;
-  if (muted) {
-    mic.stop();
-  } else if (!locked) {
-    mic.start();
+  (msg: string) => {
+    showError(msg);
+  },
+  (event: string) => {
+    // Mirror the recogniser's lifecycle to the server log. Going deaf is a
+    // browser-side failure the server cannot otherwise see at all, and the
+    // console it used to be confined to is never open when it happens.
+    socket.send({ type: "mic", text: event });
   }
-  refresh();
+);
+
+// A live meter for the microphone itself. If this moves when you speak, the
+// microphone is working — whatever else is or is not happening. It answers
+// "is it even hearing me?" without a log, a console or anyone to ask.
+const micDot = document.createElement("div");
+micDot.id = "mic-level";
+micDot.title = "microphone input";
+document.body.appendChild(micDot);
+
+const micMonitor = createMicMonitor(
+  (level: number) => {
+    const pct = Math.min(100, Math.round(level * 900));
+    micDot.style.setProperty("--level", `${pct}%`);
+    micDot.classList.toggle("is-hot", level > 0.02);
+  },
+  (event: string) => {
+    socket.send({ type: "mic", text: event });
+    // Proven deaf: sound going in, nothing coming out. Do not wait for the
+    // rotation timer to happen along — measured once at 21 seconds, all of
+    // it lost. Rebuild the recogniser now.
+    if (event.startsWith("DEAF")) voiceInput.restart("deaf: audio in, no results");
+  }
+);
+
+// ── stopping him ──────────────────────────────────────────────────────────
+// Escape, or the button that appears while he is talking. Not a spoken word:
+// his voice comes back through the microphone garbled, and a mis-hear that
+// looked like "stop" would cut him off at random. A keystroke cannot be
+// misheard.
+const hushBtn = document.createElement("button");
+hushBtn.id = "hush";
+hushBtn.type = "button";
+hushBtn.textContent = "Stop";
+hushBtn.title = "Stop speaking (Esc)";
+hushBtn.hidden = true;
+document.body.appendChild(hushBtn);
+
+function hush() {
+  if (currentState !== "speaking") return;
+  // Locally first: the round trip is real and silence should be instant.
+  audioPlayer.stop();
+  socket.send({ type: "hush" });
+  transition(isMuted ? "idle" : "listening");
 }
 
-// ── Face-auth lock ─────────────────────────────────────────────────────────
-// Only the backend knows whether face auth is on. When it is, the backend says
-// "authenticated: false", streams the camera as auth_frame, and refuses
-// start_audio until the face matches. When it is off, auth_status is true
-// from the start and nothing here changes.
-
-function showLock(): void {
-  if (unlockTimer !== null) { clearTimeout(unlockTimer); unlockTimer = null; }
-  locked = true;
-  authLockEl.classList.remove("verified");
-  authMsgEl.textContent = "Look at the camera to unlock";
-  authLockEl.hidden = false;
-  mic.stop();
-  refresh();
-}
-
-function onAuthStatus(authenticated: boolean): void {
-  if (!authenticated) {
-    showLock();
-    return;
-  }
-  if (!locked) return; // face auth off, or already open
-  locked = false;
-  authLockEl.classList.add("verified");
-  authMsgEl.textContent = "Identity verified";
-  // The backend does not start the audio loop by itself after a match.
-  if (connected) link.emit("start_audio", { device_index: null, device_name: null, muted: false });
-  if (!muted) mic.start();
-  unlockTimer = window.setTimeout(() => {
-    authLockEl.hidden = true;
-    unlockTimer = null;
-  }, 1500);
-  refresh();
-}
-
-// ── Backend link ───────────────────────────────────────────────────────────
-
-link.on("connect", () => {
-  connected = true;
-  // Idempotent on the backend; re-sent on every (re)connect so a lost emit
-  // can never leave the brain offline.
-  link.emit("start_audio", { device_index: null, device_name: null, muted: false });
-  refresh();
-});
-
-link.on("disconnect", () => {
-  connected = false;
-  endThinking();
-  refresh();
-});
-
-link.on("tts_audio", (d: TtsAudioEvent) => {
-  // A chunk from an older turn is stale: drop it for good. The first chunk of
-  // a newer turn lifts the barge-in suppression.
-  if (d.gen !== undefined) {
-    if (d.gen < speechGen) return;
-    if (d.gen > speechGen) {
-      speechGen = d.gen;
-      suppressSpeech = false;
-    }
-  }
-  if (suppressSpeech) return;
-  if (d.chunkId !== undefined) {
-    if (d.chunkId <= lastChunkId) return;
-    lastChunkId = d.chunkId;
-  }
-  endThinking();
-  player.enqueue(d.audio, d.format, { utt: d.utt, words: d.words });
-  refresh();
-});
-
-link.on("transcription", (d: TranscriptionEvent) => {
-  if (d.sender !== "You") endThinking();
-  appendLine(d.sender, d.text, true);
-});
-
-link.on("ada_question", (d: AdaQuestionEvent) => showClarify(d));
-
-link.on("auth_status", (d: AuthStatusEvent) => onAuthStatus(d.authenticated === true));
-
-link.on("auth_frame", (d: AuthFrameEvent) => {
-  if (locked && d.image) authFrameEl.src = `data:image/jpeg;base64,${d.image}`;
-});
-
-// Backend status chatter ("A.D.A Started", "Already Running") is logged, not
-// shown: the orb and the status line already say what matters.
-link.on("status", (d: StatusEvent) => {
-  if (d.msg) console.debug("[A.D.A]", d.msg);
-});
-
-link.on("error", (d: ErrorEvent) => {
-  endThinking();
-  // While locked, start_audio is refused on purpose; the lock screen explains it.
-  if (locked && /authentication required/i.test(d.msg ?? "")) return;
-  showToast(d.msg || "Something went wrong");
-});
-
-player.onPlayingChange((playing) => {
-  if (playing) endThinking();
-  refresh();
-});
-
-// ── Controls ───────────────────────────────────────────────────────────────
-
-btnMute.addEventListener("click", toggleMute);
-btnStop.addEventListener("click", stopSpeaking);
-
-composer.addEventListener("submit", (e) => {
-  e.preventDefault();
-  sendUserText(composerInput.value);
-  composerInput.value = "";
-});
-
-function isTyping(e: KeyboardEvent): boolean {
-  const t = e.target as HTMLElement | null;
-  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
-}
-
+hushBtn.addEventListener("click", hush);
 window.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.key === "Escape") {
-    if (player.playing) { e.preventDefault(); stopSpeaking(); }
-  } else if ((e.key === "m" || e.key === "M") && !isTyping(e)) {
-    toggleMute();
+  if (e.key === "Escape") { e.preventDefault(); hush(); }
+});
+
+audioPlayer.onPlayed((utt, idx) => {
+  socket.send({ type: "played", utt, idx });
+});
+
+// End of speech is the server's call (`status: idle` after every chunk is
+// acked); a transient empty queue mid-utterance must not flip the UI.
+audioPlayer.onFinished(() => {});
+
+audioPlayer.onNeedsGesture(() => {
+  showError("Click anywhere to enable audio");
+});
+
+// ---------------------------------------------------------------------------
+// WebSocket messages
+// ---------------------------------------------------------------------------
+
+socket.onMessage((msg) => {
+  const type = msg.type as string;
+
+  if (type === "config") {
+    muteMicDuringSpeech = Boolean(msg.muteMicDuringSpeech);
+  } else if (type === "audio") {
+    const data = msg.data as string;
+    if (data) {
+      if (currentState !== "speaking") transition("speaking");
+      audioPlayer.enqueue(data, Number(msg.utt), Number(msg.idx));
+    }
+    if (msg.text) console.log("[JARVIS]", msg.text);
+  } else if (type === "stop") {
+    audioPlayer.stop();
+    transition(isMuted ? "idle" : "listening");
+  } else if (type === "drop_queued") {
+    audioPlayer.dropQueued();
+  } else if (type === "status") {
+    const state = msg.state as string;
+    if (state === "thinking") transition("thinking");
+    else if (state === "speaking") transition("speaking");
+    else if (state === "compacting") transition("compacting");
+    else if (state === "idle") transition(isMuted ? "idle" : "listening");
+  } else if (type === "text") {
+    // A chunk TTS could not voice: show it instead of losing it
+    console.log("[JARVIS]", msg.text);
+    statusEl.textContent = String(msg.text);
+  } else if (type === "notice") {
+    // Shown, never spoken. The server sends one when it is about to be busy
+    // for a few seconds (a context rotation), and an empty string to clear it.
+    // Without it the pause looks like a crash.
+    const text = String(msg.text ?? "");
+    statusEl.textContent = text;
+    if (text) console.log("[notice]", text);
   }
 });
 
-// Browsers hold audio contexts suspended until a user gesture.
-const resumeAudio = (): void => {
-  player.resume();
-  mic.resume();
-};
-document.addEventListener("pointerdown", resumeAudio);
-document.addEventListener("keydown", resumeAudio, { once: true });
+// ---------------------------------------------------------------------------
+// Kick off
+// ---------------------------------------------------------------------------
 
-// ── Start ──────────────────────────────────────────────────────────────────
-
-refresh();
-// Give the orb a moment to draw before the microphone comes up.
-window.setTimeout(() => {
-  if (!muted && !locked) mic.start();
+// Start listening after a brief delay for the orb to render
+setTimeout(() => {
+  voiceInput.start();
+  if (currentState !== "speaking") transition("listening");
 }, 1000);
+
+// Resume AudioContext on ANY user interaction (browser autoplay policy)
+function ensureAudioContext() {
+  const ctx = audioPlayer.getAnalyser().context as AudioContext;
+  if (ctx.state === "suspended") {
+    ctx.resume().then(() => console.log("[audio] context resumed"));
+  }
+}
+document.addEventListener("click", ensureAudioContext);
+document.addEventListener("touchstart", ensureAudioContext);
+document.addEventListener("keydown", ensureAudioContext, { once: true });
+
+// Try to resume audio context on load
+ensureAudioContext();
+
+// ---------------------------------------------------------------------------
+// UI Controls
+// ---------------------------------------------------------------------------
+
+const btnMute = document.getElementById("btn-mute")!;
+const btnMenu = document.getElementById("btn-menu")!;
+const menuDropdown = document.getElementById("menu-dropdown")!;
+const btnRestart = document.getElementById("btn-restart")!;
+const btnFixSelf = document.getElementById("btn-fix-self")!;
+
+btnMute.addEventListener("click", (e) => {
+  e.stopPropagation();
+  isMuted = !isMuted;
+  btnMute.classList.toggle("muted", isMuted);
+  if (isMuted) {
+    voiceInput.pause();
+    transition("idle");
+  } else {
+    voiceInput.resume();
+    transition("listening");
+  }
+});
+
+btnMenu.addEventListener("click", (e) => {
+  e.stopPropagation();
+  menuDropdown.style.display = menuDropdown.style.display === "none" ? "block" : "none";
+});
+
+document.addEventListener("click", () => {
+  menuDropdown.style.display = "none";
+});
+
+btnRestart.addEventListener("click", (e) => {
+  e.stopPropagation();
+  menuDropdown.style.display = "none";
+  // A.D.A's backend has no restart route. Restart it from the desktop app.
+  statusEl.textContent = "restart is not available in this build";
+});
+
+btnFixSelf.addEventListener("click", (e) => {
+  e.stopPropagation();
+  menuDropdown.style.display = "none";
+  // Activate work mode on the WebSocket session (JARVIS becomes Claude Code's voice)
+  // Milestone 1 has no tools yet; "Fix yourself" returns as a brain tool later.
+  statusEl.textContent = "fix-yourself is not available in this build";
+});
+
+// Settings button. A.D.A's settings are not wired into this screen yet.
+const btnSettings = document.getElementById("btn-settings")!;
+btnSettings.addEventListener("click", (e) => {
+  e.stopPropagation();
+  menuDropdown.style.display = "none";
+  statusEl.textContent = "settings are not available in this build";
+});

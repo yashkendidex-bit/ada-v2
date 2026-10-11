@@ -1,160 +1,45 @@
 /**
- * A.D.A orb: the particle sphere that is her face.
+ * JARVIS — Multi-mode particle visualization.
  *
- * Derived from ethanplusai/jarvis (frontend/src/orb.ts), Copyright (c) 2026
- * Ethan Rogers, under the JARVIS non-commercial licence
- * (licenses/JARVIS-LICENSE.txt). See NOTICE.md.
- *
- * What changed for responsiveness and smoothness:
- *  - Frame-rate-independent motion. The original moved 2% of the remaining
- *    distance per frame, so its speed depended on the display's refresh
- *    rate. Here every transition is an exponential approach in seconds, and
- *    the particle integrator is scaled by elapsed time.
- *  - An audio envelope with a fast attack and a slow release: the sphere
- *    snaps to a loud word and settles smoothly after it. While she speaks it
- *    is measured from the real TTS output; while you speak, from the mic.
- *  - Connections come from a k-nearest-neighbour graph built once at start.
- *    Each frame is a single linear pass over those edges, instead of the
- *    original O(N^2) pair search. Each edge fades with its current length, so
- *    links fade in and out rather than flickering across a threshold.
- *  - Colours are interpolated in place. Nothing is allocated per frame.
- *  - Adaptive quality: if frames run long, the orb lowers its pixel ratio and
- *    thins the link pass, and recovers when there is headroom again.
- *  - Respects prefers-reduced-motion by scaling the tumble and drift down.
+ * Floating particles with line connections between nearby ones.
+ * Lines fade in/out based on state. Transition tumble on state change.
+ * Speaking pulls particles closer for denser connections.
  */
 
 import * as THREE from "three";
 
-export type OrbState = "idle" | "listening" | "thinking" | "speaking" | "offline";
+// "compacting": the brain is being swapped for a fresh one behind the scenes
+// (a context rotation). He answers nothing for a few seconds, and silence with
+// no explanation reads as a crash. It used to be followed by a spoken line;
+// the user found that annoying, so the orb carries it instead: dim, slow,
+// drawn inward, in a cooler colour -- unmistakably not "about to answer".
+export type OrbState = "idle" | "listening" | "thinking" | "speaking" | "compacting";
 
 export interface Orb {
   setState(s: OrbState): void;
-  setPlaybackAnalyser(a: AnalyserNode | null): void;
-  setMicLevel(rms: number): void;
-  pulse(): void;
+  setAnalyser(a: AnalyserNode | null): void;
   destroy(): void;
 }
 
-// ── Tuning ─────────────────────────────────────────────────────────────────
-
-const N = 2000;                 // particles
-const K = 5;                    // neighbours per particle in the link graph
-const LINK_DIST = 8;            // a link is at full brightness below this length
-const MAX_ELECTRONS = 200;
-const MAX_ACTIVE_ELECTRONS = 3;
-
-const TAU_STATE = 0.22;         // seconds: how quickly the orb changes character
-const TAU_COLOR = 0.25;
-const TAU_ATTACK = 0.05;        // audio envelope rises fast...
-const TAU_RELEASE = 0.22;       // ...and settles smoothly
-const TAU_TUMBLE = 0.7;         // state-change spin decay
-const TAU_PULSE = 0.3;          // user-action pulse decay
-
-const MIC_GAIN = 6;             // mic RMS -> 0..1 envelope
-const VOICE_GAIN = 4;           // playback RMS -> 0..1 envelope
-const LINK_BRIGHTNESS = 0.35;
-
-const COLOR = {
-  base: new THREE.Color(0x4ca8e8),
-  think: new THREE.Color(0x6ec4ff),
-  speak: new THREE.Color(0x5ab8f0),
-  dim: new THREE.Color(0x3a5f8a),
-};
-
-interface Target {
-  radius: number;
-  speed: number;
-  bright: number;
-  size: number;
-  lines: number;
-  electronRate: number;
-  color: THREE.Color;
-}
-
-const TARGETS: Record<OrbState, Target> = {
-  idle:      { radius: 28, speed: 0.2,  bright: 0.5,  size: 0.35, lines: 0.15, electronRate: 0,     color: COLOR.base },
-  listening: { radius: 22, speed: 0.3,  bright: 0.65, size: 0.4,  lines: 0.4,  electronRate: 0,     color: COLOR.base },
-  thinking:  { radius: 16, speed: 0.5,  bright: 0.7,  size: 0.3,  lines: 1.0,  electronRate: 0.015, color: COLOR.think },
-  speaking:  { radius: 18, speed: 0.2,  bright: 0.7,  size: 0.4,  lines: 0.8,  electronRate: 0,     color: COLOR.speak },
-  // Offline: smaller, slower, dimmer, drawn inward, no links. Reads as "not
-  // here", not as "about to answer".
-  offline:   { radius: 12, speed: 0.08, bright: 0.28, size: 0.28, lines: 0.0,  electronRate: 0,     color: COLOR.dim },
-};
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
-const approach = (dt: number, tau: number) => 1 - Math.exp(-dt / tau);
-
-/** k-nearest-neighbour edges over the rest positions, as flat index pairs. */
-function buildEdges(pos: Float32Array): Uint32Array {
-  const seen = new Set<number>();
-  const out: number[] = [];
-  const bestD = new Float32Array(K);
-  const bestJ = new Int32Array(K);
-  for (let i = 0; i < N; i++) {
-    bestD.fill(Infinity);
-    bestJ.fill(-1);
-    const xi = pos[i * 3], yi = pos[i * 3 + 1], zi = pos[i * 3 + 2];
-    for (let j = 0; j < N; j++) {
-      if (j === i) continue;
-      const dx = pos[j * 3] - xi, dy = pos[j * 3 + 1] - yi, dz = pos[j * 3 + 2] - zi;
-      const d = dx * dx + dy * dy + dz * dz;
-      if (d < bestD[K - 1]) {
-        let k = K - 1;
-        while (k > 0 && bestD[k - 1] > d) {
-          bestD[k] = bestD[k - 1];
-          bestJ[k] = bestJ[k - 1];
-          k--;
-        }
-        bestD[k] = d;
-        bestJ[k] = j;
-      }
-    }
-    for (let k = 0; k < K; k++) {
-      const j = bestJ[k];
-      if (j < 0) continue;
-      const a = Math.min(i, j), b = Math.max(i, j);
-      const key = a * N + b;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(a, b);
-      }
-    }
-  }
-  return Uint32Array.from(out);
-}
-
-function rms(buf: Float32Array): number {
-  let s = 0;
-  for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
-  return Math.sqrt(s / buf.length);
-}
-
-// ── Orb ────────────────────────────────────────────────────────────────────
-
 export function createOrb(canvas: HTMLCanvasElement): Orb {
-  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  const motion = reduceMotion ? 0.35 : 1;
+  let destroyed = false;
+  const N = 2000;
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x050508, 1);
-  const dprCeil = Math.min(window.devicePixelRatio || 1, 2);
-  let dprFull = true;
-  renderer.setPixelRatio(dprCeil);
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
-  camera.position.z = 92;     // a little back, so the sphere leaves room for the transcript
-
-  const cloud = new THREE.Group();
-  scene.add(cloud);
+  camera.position.z = 80;
 
   // ── Particles ──
+  const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(N * 3);
   const vel = new Float32Array(N * 3);
   const phase = new Float32Array(N);
+
   for (let i = 0; i < N; i++) {
     const theta = Math.random() * Math.PI * 2;
     const phi = Math.acos(2 * Math.random() - 1);
@@ -164,278 +49,300 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     pos[i * 3 + 2] = r * Math.cos(phi);
     phase[i] = Math.random() * 1000;
   }
-  const pointGeo = new THREE.BufferGeometry();
-  pointGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  const pointMat = new THREE.PointsMaterial({
-    color: COLOR.base, size: 0.4, transparent: true, opacity: 0.6,
+
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+
+  const mat = new THREE.PointsMaterial({
+    color: 0x4ca8e8, size: 0.4, transparent: true, opacity: 0.6,
     sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  cloud.add(new THREE.Points(pointGeo, pointMat));
 
-  // ── Links (fixed topology, per-frame brightness) ──
-  const edges = buildEdges(pos);
-  const E = edges.length / 2;
-  const linkPos = new Float32Array(E * 6);
-  const linkCol = new Float32Array(E * 6);
-  const linkGeo = new THREE.BufferGeometry();
-  linkGeo.setAttribute("position", new THREE.BufferAttribute(linkPos, 3));
-  linkGeo.setAttribute("color", new THREE.BufferAttribute(linkCol, 3));
-  linkGeo.setDrawRange(0, E * 2);
-  const linkMat = new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 1,
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+
+  // ── Connection lines ──
+  const MAX_LINES = 8000;
+  const linePos = new Float32Array(MAX_LINES * 6);
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute("position", new THREE.BufferAttribute(linePos, 3));
+  lineGeo.setDrawRange(0, 0);
+
+  const lineMat = new THREE.LineBasicMaterial({
+    color: 0x4ca8e8, transparent: true, opacity: 0.0,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  cloud.add(new THREE.LineSegments(linkGeo, linkMat));
-  let linksLit = false;
 
-  // ── Electrons (travel along edges while thinking) ──
-  const elPos = new Float32Array(MAX_ELECTRONS * 3);
-  const elGeo = new THREE.BufferGeometry();
-  elGeo.setAttribute("position", new THREE.BufferAttribute(elPos, 3));
-  elGeo.setDrawRange(0, 0);
-  const elMat = new THREE.PointsMaterial({
-    color: 0xffffff, size: 0.8, transparent: true, opacity: 1,
+  const lines = new THREE.LineSegments(lineGeo, lineMat);
+  scene.add(lines);
+
+  // ── Electrons — bright dots that travel along connections ──
+  const MAX_ELECTRONS = 200;
+  const electronGeo = new THREE.BufferGeometry();
+  const electronPos = new Float32Array(MAX_ELECTRONS * 3);
+  electronGeo.setAttribute("position", new THREE.BufferAttribute(electronPos, 3));
+  electronGeo.setDrawRange(0, 0);
+
+  const electronMat = new THREE.PointsMaterial({
+    color: 0xffffff, size: 0.8, transparent: true, opacity: 1.0,
     sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  cloud.add(new THREE.Points(elGeo, elMat));
-  interface Electron { edge: number; t: number; speed: number; }
-  const electrons: Electron[] = [];
-  let lastSpawn = -1;
+
+  const electrons = new THREE.Points(electronGeo, electronMat);
+  scene.add(electrons);
+
+  // Each electron: start point, end point, progress (0-1), speed
+  interface Electron { sx: number; sy: number; sz: number; ex: number; ey: number; ez: number; t: number; speed: number; }
+  const activeElectrons: Electron[] = [];
+  let electronSpawnRate = 0;
+  let targetElectronRate = 0;
+  let lastElectronSpawn = 0; // timestamp of last spawn
+
+  // Store active connections for electron spawning
+  let activeConnections: { x1: number; y1: number; z1: number; x2: number; y2: number; z2: number }[] = [];
 
   // ── State ──
   let state: OrbState = "idle";
-  let target: Target = TARGETS.idle;
-  let radius = TARGETS.idle.radius;
-  let speed = TARGETS.idle.speed;
-  let bright = TARGETS.idle.bright;
-  let size = TARGETS.idle.size;
-  let lines = TARGETS.idle.lines;
-  let electronRate = 0;
-  const colorCur = COLOR.base.clone();
-  let tumble = 0;          // decays after a state change: spin and drift
-  let pulseEnergy = 0;     // decays after a user action: a brief swell
+  let targetRadius = 25, currentRadius = 25;
+  let targetSpeed = 0.3, currentSpeed = 0.3;
+  let targetBright = 0.6, currentBright = 0.6;
+  let targetSize = 0.4, currentSize = 0.4;
+  let lineAmount = 0, targetLineAmount = 0;
+  let lineDistance = 8;
+
+  // Transition tumble
   let spinX = 0, spinY = 0, spinZ = 0;
-  let cloudZ = 0;
+  let transitionEnergy = 0;
+  let lastState: OrbState = "idle";
+
+  // Depth Z
+  let cloudZ = 0, cloudZVel = 0;
 
   // ── Audio ──
-  let playAnalyser: AnalyserNode | null = null;
-  let playBuf = new Float32Array(512);
-  let micRaw = 0;
-  let envelope = 0;        // smoothed 0..1 voice / mic energy
+  let analyser: AnalyserNode | null = null;
+  let freqData = new Uint8Array(64);
+  let bass = 0, mid = 0;
 
-  // ── Quality ──
-  let quality = 1;
-  let frameEma = 1 / 60;
-  let frameIdx = 0;
+  const clock = new THREE.Clock();
 
-  let destroyed = false;
-  let rafId = 0;
-  // Own timer: THREE.Clock is deprecated in recent three.js releases.
-  let lastTime = performance.now() / 1000;
-  let elapsed = 0;
-
-  function adaptQuality(dt: number): void {
-    frameEma += (dt - frameEma) * 0.05;
-    if (frameEma > 1 / 40) quality = Math.max(0.3, quality - dt * 0.5);
-    else if (frameEma < 1 / 55) quality = Math.min(1, quality + dt * 0.15);
-    const full = quality > 0.7;
-    if (full !== dprFull) {
-      dprFull = full;
-      renderer.setPixelRatio(full ? dprCeil : Math.max(1, dprCeil * 0.75));
-      renderer.setSize(window.innerWidth, window.innerHeight, false);
-    }
-  }
-
-  function frame(): void {
+  function animate() {
     if (destroyed) return;
-    rafId = requestAnimationFrame(frame);
+    requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
 
-    const now = performance.now() / 1000;
-    const dt = Math.min(now - lastTime, 0.1);   // clamp: a background tab must not jump
-    lastTime = now;
-    elapsed += dt;
-    const t = elapsed;
-    const f = dt * 60;                       // per-frame factor at 60 fps
-    frameIdx++;
-    adaptQuality(dt);
-
-    // Smooth towards the current state's targets.
-    const a = approach(dt, TAU_STATE);
-    radius += (target.radius - radius) * a;
-    speed += (target.speed - speed) * a;
-    bright += (target.bright - bright) * a;
-    size += (target.size - size) * a;
-    lines += (target.lines - lines) * a;
-    electronRate += (target.electronRate - electronRate) * a;
-    colorCur.lerp(target.color, approach(dt, TAU_COLOR));
-    tumble *= Math.exp(-dt / TAU_TUMBLE);
-    pulseEnergy *= Math.exp(-dt / TAU_PULSE);
-
-    // Audio envelope: fast attack, slow release.
-    let raw: number;
-    if (state === "speaking" && playAnalyser) {
-      playAnalyser.getFloatTimeDomainData(playBuf);
-      raw = rms(playBuf) * VOICE_GAIN;
-    } else {
-      raw = micRaw * MIC_GAIN;
+    switch (state) {
+      case "idle":
+        targetRadius = 28; targetSpeed = 0.2; targetBright = 0.5; targetSize = 0.35;
+        targetLineAmount = 0.15; targetElectronRate = 0; break;
+      case "listening":
+        targetRadius = 22; targetSpeed = 0.3; targetBright = 0.65; targetSize = 0.4;
+        targetLineAmount = 0.4; targetElectronRate = 0; break;
+      case "thinking":
+        targetRadius = 16; targetSpeed = 0.5; targetBright = 0.7; targetSize = 0.3;
+        targetLineAmount = 1.0; targetElectronRate = 0.015; break;
+      case "speaking":
+        targetRadius = 18; targetSpeed = 0.2; targetBright = 0.7; targetSize = 0.4;
+        targetLineAmount = 0.8; targetElectronRate = 0; break;
+      case "compacting":
+        // Smaller than idle, slower than anything, half the brightness, no
+        // connecting lines: a held breath, not a working mind.
+        targetRadius = 12; targetSpeed = 0.08; targetBright = 0.28; targetSize = 0.28;
+        targetLineAmount = 0.0; targetElectronRate = 0; break;
     }
-    raw = clamp01(raw);
-    envelope += (raw - envelope) * approach(dt, raw > envelope ? TAU_ATTACK : TAU_RELEASE);
 
-    // Spin and drift.
-    const spinAmt = tumble * motion;
-    spinX += spinAmt * 0.012 * Math.sin(t * 1.7) * f;
-    spinY += spinAmt * 0.015 * f;
-    spinZ += spinAmt * 0.008 * Math.cos(t * 1.3) * f;
-    cloud.rotation.set(spinX, spinY, spinZ);
+    currentRadius += (targetRadius - currentRadius) * 0.02;
+    currentSpeed += (targetSpeed - currentSpeed) * 0.02;
+    currentBright += (targetBright - currentBright) * 0.02;
+    currentSize += (targetSize - currentSize) * 0.02;
+    lineAmount += (targetLineAmount - lineAmount) * 0.02;
+    electronSpawnRate += (targetElectronRate - electronSpawnRate) * 0.02;
 
-    // Depth breathing.
+    // Transition energy
+    if (state !== lastState) { transitionEnergy = 1.0; lastState = state; }
+    transitionEnergy *= 0.985;
+    if (transitionEnergy > 0.05) {
+      spinX += transitionEnergy * 0.012 * Math.sin(t * 1.7);
+      spinY += transitionEnergy * 0.015;
+      spinZ += transitionEnergy * 0.008 * Math.cos(t * 1.3);
+    }
+
+    // Audio
+    bass = 0; mid = 0;
+    if (analyser) {
+      analyser.getByteFrequencyData(freqData);
+      let bSum = 0, mSum = 0;
+      for (let i = 0; i < 8; i++) bSum += freqData[i];
+      for (let i = 8; i < 24; i++) mSum += freqData[i];
+      bass = bSum / (8 * 255); mid = mSum / (16 * 255);
+    }
+
+    // Depth Z breathing
     let zTarget = Math.sin(t * 0.12) * 8;
     if (state === "thinking") zTarget = Math.sin(t * 0.3) * 15 + Math.sin(t * 0.9) * 6;
-    else if (state === "speaking") zTarget = Math.sin(t * 0.15) * 6 - envelope * 10;
-    else if (state === "offline") zTarget = -20 + Math.sin(t * 0.08) * 3;
-    cloudZ += (zTarget * motion - cloudZ) * approach(dt, 0.6);
-    cloud.position.z = cloudZ;
+    else if (state === "speaking") zTarget = Math.sin(t * 0.15) * 6 - bass * 10;
+    else if (state === "compacting") zTarget = -20 + Math.sin(t * 0.08) * 3;   // withdrawn, barely moving
+    cloudZVel += (zTarget - cloudZ) * 0.008;
+    cloudZVel *= 0.94;
+    cloudZ += cloudZVel;
 
-    // Particle physics. Pulled towards the target radius, drifted by noise,
-    // pushed outward by the voice envelope.
-    const effRadius = radius - pulseEnergy * 5;
-    const damp = Math.pow(0.992, f);
-    const drift = speed * f * motion;
-    const sp = state === "speaking";
+    points.rotation.x = spinX; points.rotation.y = spinY; points.rotation.z = spinZ;
+    points.position.z = cloudZ;
+    lines.rotation.x = spinX; lines.rotation.y = spinY; lines.rotation.z = spinZ;
+    lines.position.z = cloudZ;
+
+    // ── Update particles ──
+    const p = geo.getAttribute("position") as THREE.BufferAttribute;
+    const a = p.array as Float32Array;
+
     for (let i = 0; i < N; i++) {
       const i3 = i * 3;
-      let x = pos[i3], y = pos[i3 + 1], z = pos[i3 + 2];
+      let x = a[i3], y = a[i3 + 1], z = a[i3 + 2];
       const px = phase[i];
 
-      vel[i3] += Math.sin(t * 0.05 + px) * 0.001 * drift;
-      vel[i3 + 1] += Math.cos(t * 0.06 + px * 1.3) * 0.001 * drift;
-      vel[i3 + 2] += Math.sin(t * 0.055 + px * 0.7) * 0.001 * drift;
-      vel[i3] += Math.sin(t * 0.02 + px * 2.1 + y * 0.1) * 0.0008 * drift;
-      vel[i3 + 1] += Math.cos(t * 0.025 + px * 1.7 + z * 0.1) * 0.0008 * drift;
-      vel[i3 + 2] += Math.sin(t * 0.022 + px * 0.9 + x * 0.1) * 0.0008 * drift;
+      vel[i3] += Math.sin(t * 0.05 + px) * 0.001 * currentSpeed;
+      vel[i3 + 1] += Math.cos(t * 0.06 + px * 1.3) * 0.001 * currentSpeed;
+      vel[i3 + 2] += Math.sin(t * 0.055 + px * 0.7) * 0.001 * currentSpeed;
+      vel[i3] += Math.sin(t * 0.02 + px * 2.1 + y * 0.1) * 0.0008 * currentSpeed;
+      vel[i3 + 1] += Math.cos(t * 0.025 + px * 1.7 + z * 0.1) * 0.0008 * currentSpeed;
+      vel[i3 + 2] += Math.sin(t * 0.022 + px * 0.9 + x * 0.1) * 0.0008 * currentSpeed;
 
       const dist = Math.sqrt(x * x + y * y + z * z) || 0.01;
-      const pull = Math.max(0, dist - effRadius) * 0.002 + 0.0003;
-      vel[i3] -= (x / dist) * pull * f;
-      vel[i3 + 1] -= (y / dist) * pull * f;
-      vel[i3 + 2] -= (z / dist) * pull * f;
+      const pull = Math.max(0, dist - currentRadius) * 0.002 + 0.0003;
+      vel[i3] -= (x / dist) * pull;
+      vel[i3 + 1] -= (y / dist) * pull;
+      vel[i3 + 2] -= (z / dist) * pull;
 
-      if (envelope > 0.04) {
-        const push = envelope * 0.02 * f;
-        vel[i3] += (x / dist) * push;
-        vel[i3 + 1] += (y / dist) * push;
-        vel[i3 + 2] += (z / dist) * push;
+      if (bass > 0.05) {
+        vel[i3] += (x / dist) * bass * 0.02;
+        vel[i3 + 1] += (y / dist) * bass * 0.02;
+        vel[i3 + 2] += (z / dist) * bass * 0.02;
       }
-      if (sp && envelope > 0.1) {
-        const wave = Math.sin(t * 8 + px) * envelope * 0.012 * f;
-        vel[i3] += (x / dist) * wave;
-        vel[i3 + 1] += (y / dist) * wave;
+      if (state === "speaking" && mid > 0.1) {
+        const pulse = Math.sin(t * 8 + px);
+        vel[i3] += (x / dist) * mid * 0.012 * pulse;
+        vel[i3 + 1] += (y / dist) * mid * 0.012 * pulse;
       }
 
-      vel[i3] *= damp; vel[i3 + 1] *= damp; vel[i3 + 2] *= damp;
-      x += vel[i3] * f; y += vel[i3 + 1] * f; z += vel[i3 + 2] * f;
-      pos[i3] = x; pos[i3 + 1] = y; pos[i3 + 2] = z;
+      vel[i3] *= 0.992; vel[i3 + 1] *= 0.992; vel[i3 + 2] *= 0.992;
+      a[i3] += vel[i3]; a[i3 + 1] += vel[i3 + 1]; a[i3 + 2] += vel[i3 + 2];
     }
-    (pointGeo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+    p.needsUpdate = true;
 
-    // Links: one linear pass over the fixed edge list.
-    const linkAmount = clamp01(lines);
-    const updateLinks = quality > 0.6 || (frameIdx & 1) === 0;
-    if (linkAmount > 0.01) {
-      if (updateLinks) {
-        const maxD = LINK_DIST * (1 + envelope * 0.5);
-        const inv = 1 / maxD;
-        const r = colorCur.r * LINK_BRIGHTNESS, g = colorCur.g * LINK_BRIGHTNESS, b = colorCur.b * LINK_BRIGHTNESS;
-        for (let e = 0; e < E; e++) {
-          const i3 = edges[e * 2] * 3, j3 = edges[e * 2 + 1] * 3;
-          const x1 = pos[i3], y1 = pos[i3 + 1], z1 = pos[i3 + 2];
-          const x2 = pos[j3], y2 = pos[j3 + 1], z2 = pos[j3 + 2];
-          const o = e * 6;
-          linkPos[o] = x1; linkPos[o + 1] = y1; linkPos[o + 2] = z1;
-          linkPos[o + 3] = x2; linkPos[o + 4] = y2; linkPos[o + 5] = z2;
-          const dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
-          let w = 1 - Math.sqrt(dx * dx + dy * dy + dz * dz) * inv;
-          w = w > 0 ? w * w * linkAmount : 0;
-          const cr = r * w, cg = g * w, cb = b * w;
-          linkCol[o] = cr; linkCol[o + 1] = cg; linkCol[o + 2] = cb;
-          linkCol[o + 3] = cr; linkCol[o + 4] = cg; linkCol[o + 5] = cb;
+    // ── Update lines ──
+    if (lineAmount > 0.01) {
+      const lp = lineGeo.getAttribute("position") as THREE.BufferAttribute;
+      const la = lp.array as Float32Array;
+      let lineCount = 0;
+      const maxDist = lineDistance * (1 + bass * 0.5);
+      const maxDistSq = maxDist * maxDist;
+      const step = Math.max(1, Math.floor(N / 600));
+
+      for (let i = 0; i < N && lineCount < MAX_LINES; i += step) {
+        const i3 = i * 3;
+        const x1 = a[i3], y1 = a[i3 + 1], z1 = a[i3 + 2];
+        for (let j = i + step; j < N && lineCount < MAX_LINES; j += step) {
+          const j3 = j * 3;
+          const dx = a[j3] - x1, dy = a[j3 + 1] - y1, dz = a[j3 + 2] - z1;
+          if (dx * dx + dy * dy + dz * dz < maxDistSq) {
+            const idx = lineCount * 6;
+            la[idx] = x1; la[idx+1] = y1; la[idx+2] = z1;
+            la[idx+3] = a[j3]; la[idx+4] = a[j3+1]; la[idx+5] = a[j3+2];
+            lineCount++;
+          }
         }
-        (linkGeo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-        (linkGeo.getAttribute("color") as THREE.BufferAttribute).needsUpdate = true;
-        linksLit = true;
       }
-    } else if (linksLit) {
-      linkCol.fill(0);
-      (linkGeo.getAttribute("color") as THREE.BufferAttribute).needsUpdate = true;
-      linksLit = false;
+      lineGeo.setDrawRange(0, lineCount * 2);
+      lp.needsUpdate = true;
+      lineMat.opacity = lineAmount * 0.12;
+
+      // Store connections for electron spawning
+      activeConnections = [];
+      for (let c = 0; c < Math.min(lineCount, 500); c++) {
+        const ci = c * 6;
+        activeConnections.push({
+          x1: la[ci], y1: la[ci+1], z1: la[ci+2],
+          x2: la[ci+3], y2: la[ci+4], z2: la[ci+5],
+        });
+      }
+    } else {
+      lineGeo.setDrawRange(0, 0);
+      activeConnections = [];
     }
 
-    // Electrons: spawn while thinking, then ride the edges with the particles.
-    if (electronRate > 0.005 && E > 0 && electrons.length < MAX_ACTIVE_ELECTRONS && t - lastSpawn > 1.0) {
-      electrons.push({ edge: Math.floor(Math.random() * E), t: 0, speed: 0.003 + Math.random() * 0.003 });
-      lastSpawn = t;
+    // ── Update electrons — only during thinking ──
+    // One fires off every ~1 second, max 3 alive, takes 2-4s to travel
+    if (activeConnections.length > 0 && electronSpawnRate > 0.005) {
+      if (activeElectrons.length < 3 && (t - lastElectronSpawn) > 1.0) {
+        const conn = activeConnections[Math.floor(Math.random() * activeConnections.length)];
+        // speed: 1/fps * speed = progress per frame. At 60fps, speed 0.005 = 200 frames = 3.3s
+        activeElectrons.push({
+          sx: conn.x1, sy: conn.y1, sz: conn.z1,
+          ex: conn.x2, ey: conn.y2, ez: conn.z2,
+          t: 0,
+          speed: 0.003 + Math.random() * 0.003, // 2-4 seconds to travel
+        });
+        lastElectronSpawn = t;
+      }
     }
-    let alive = 0;
-    for (let k = electrons.length - 1; k >= 0; k--) {
-      const el = electrons[k];
-      el.t += el.speed * f;
-      if (el.t >= 1) { electrons.splice(k, 1); continue; }
-      const a3 = edges[el.edge * 2] * 3, b3 = edges[el.edge * 2 + 1] * 3;
-      const o = alive * 3;
-      elPos[o] = pos[a3] + (pos[b3] - pos[a3]) * el.t;
-      elPos[o + 1] = pos[a3 + 1] + (pos[b3 + 1] - pos[a3 + 1]) * el.t;
-      elPos[o + 2] = pos[a3 + 2] + (pos[b3 + 2] - pos[a3 + 2]) * el.t;
-      alive++;
+
+    // Update electron positions
+    const ep = electronGeo.getAttribute("position") as THREE.BufferAttribute;
+    const ea = ep.array as Float32Array;
+    let aliveCount = 0;
+
+    for (let e = activeElectrons.length - 1; e >= 0; e--) {
+      const el = activeElectrons[e];
+      el.t += el.speed;
+      if (el.t >= 1) {
+        activeElectrons.splice(e, 1);
+        continue;
+      }
+      const ei = aliveCount * 3;
+      ea[ei] = el.sx + (el.ex - el.sx) * el.t;
+      ea[ei + 1] = el.sy + (el.ey - el.sy) * el.t;
+      ea[ei + 2] = el.sz + (el.ez - el.sz) * el.t;
+      aliveCount++;
     }
-    elGeo.setDrawRange(0, alive);
-    (elGeo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
 
-    // Material.
-    pointMat.opacity = clamp01(bright + envelope * 0.15 + pulseEnergy * 0.2);
-    pointMat.size = size + envelope * 0.05 + pulseEnergy * 0.08;
-    pointMat.color.copy(colorCur);
+    electronGeo.setDrawRange(0, aliveCount);
+    ep.needsUpdate = true;
 
-    // Camera drift.
-    camera.position.x = Math.sin(t * 0.02 * motion) * 5;
-    camera.position.y = Math.cos(t * 0.03 * motion) * 3;
+    // Electrons follow the same rotation/position as the main group
+    electrons.rotation.x = spinX; electrons.rotation.y = spinY; electrons.rotation.z = spinZ;
+    electrons.position.z = cloudZ;
+
+    mat.opacity = currentBright + bass * 0.08;
+    mat.size = currentSize + bass * 0.05;
+
+    if (state === "thinking") { mat.color.lerp(new THREE.Color(0x6ec4ff), 0.015); lineMat.color.lerp(new THREE.Color(0x6ec4ff), 0.015); }
+    else if (state === "speaking") { mat.color.lerp(new THREE.Color(0x5ab8f0), 0.015); lineMat.color.lerp(new THREE.Color(0x5ab8f0), 0.015); }
+    else if (state === "compacting") { mat.color.lerp(new THREE.Color(0x3a5f8a), 0.03); lineMat.color.lerp(new THREE.Color(0x3a5f8a), 0.03); }   // desaturated, cooler
+    else { mat.color.lerp(new THREE.Color(0x4ca8e8), 0.015); lineMat.color.lerp(new THREE.Color(0x4ca8e8), 0.015); }
+
+    camera.position.x = Math.sin(t * 0.02) * 5;
+    camera.position.y = Math.cos(t * 0.03) * 3;
     camera.lookAt(0, 0, cloudZ * 0.2);
 
     renderer.render(scene, camera);
   }
 
-  function onResize(): void {
+  function onResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    renderer.setSize(window.innerWidth, window.innerHeight);
   }
+
   window.addEventListener("resize", onResize);
-  rafId = requestAnimationFrame(frame);
+  animate();
 
   return {
-    setState(s: OrbState) {
-      if (s === state) return;
-      state = s;
-      target = TARGETS[s];
-      tumble = Math.max(tumble, 1);
-    },
-    setPlaybackAnalyser(a: AnalyserNode | null) {
-      playAnalyser = a;
-      playBuf = new Float32Array(a ? a.fftSize : 512);
-    },
-    setMicLevel(level: number) {
-      micRaw = level;
-    },
-    pulse() {
-      pulseEnergy = 1;
+    setState(s: OrbState) { state = s; },
+    setAnalyser(a: AnalyserNode | null) {
+      analyser = a;
+      if (a) freqData = new Uint8Array(a.frequencyBinCount);
     },
     destroy() {
       destroyed = true;
-      cancelAnimationFrame(rafId);
       window.removeEventListener("resize", onResize);
-      pointGeo.dispose();
-      linkGeo.dispose();
-      elGeo.dispose();
       renderer.dispose();
     },
   };
