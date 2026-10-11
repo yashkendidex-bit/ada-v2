@@ -39,7 +39,7 @@ scheduler, an autonomy ladder, and a 3D assembly engine that designs parts from 
 ```mermaid
 graph TB
     subgraph Frontend ["Frontend (Electron + TypeScript)"]
-        UI[JARVIS screen<br/>orb.ts · main.ts · style.css]
+        UI[JARVIS screen<br/>orb.ts · orb-motion.ts · main.ts · style.css]
         LINK[ws.ts<br/>Socket.IO adapter]
         MIC[ada-voice.ts + mic.ts<br/>VAD + utterance capture]
         VOICE[voice.ts<br/>Audio queue]
@@ -390,7 +390,8 @@ ada_v2/
 ├── index.html                  # The JARVIS screen (title and label read A.D.A)
 ├── src/                        # Frontend: TypeScript + Vite + three.js
 │   ├── main.ts                 # JARVIS screen wiring (from JARVIS, three small edits)
-│   ├── orb.ts                  # The orb (from JARVIS, verbatim)
+│   ├── orb.ts                  # The orb (from JARVIS, modified: hears the mic, breathes, pulses)
+│   ├── orb-motion.ts           # Timing helpers for the orb (frame-rate independent)
 │   ├── style.css               # Layout and palette (from JARVIS, verbatim)
 │   ├── voice.ts                # Audio queue and mic meter (from JARVIS, verbatim)
 │   ├── ws.ts                   # Transport: JARVIS's socket API over A.D.A's Socket.IO

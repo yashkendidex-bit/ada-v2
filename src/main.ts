@@ -95,6 +95,10 @@ const voiceInput = createVoiceInput(
     // browser-side failure the server cannot otherwise see at all, and the
     // console it used to be confined to is never open when it happens.
     socket.send({ type: "mic", text: event });
+  },
+  (rms: number) => {
+    // The cloud listens: it swells and leans toward the user while they talk.
+    orb.setMicLevel(rms);
   }
 );
 
