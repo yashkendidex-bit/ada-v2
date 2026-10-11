@@ -22,7 +22,7 @@ scheduler, an autonomy ladder, and a 3D assembly engine that designs parts from 
 | **🗣️ Low-Latency Voice** | Streaming conversation with word-level barge-in | Groq Whisper (STT) → Mistral Voxtral (TTS) |
 | **🧊 Assembly CAD** | Multi-part designs from a sentence, with real mates | `cad_v3` engine on build123d / OCCT |
 | **🖨️ 3D Printing** | Slicing and wireless print job submission | OrcaSlicer + Moonraker/OctoPrint |
-| **🔮 Reactive Orb UI** | Particle orb that follows voice, thinking and playback | TypeScript + three.js |
+| **🔮 JARVIS Screen** | The JARVIS interface, copied: particle orb, voice-first controls | TypeScript + three.js (non-commercial licence, see NOTICE.md) |
 | **👁️ Face Authentication** | Secure local biometric login | MediaPipe Face Landmarker |
 | **🌐 Web Agent** | Autonomous browser automation | Playwright + Chromium |
 | **🧠 Persistent Memory** | Facts, episodes and an entity graph across sessions | SQLite kernel + embeddings |
@@ -39,10 +39,10 @@ scheduler, an autonomy ladder, and a 3D assembly engine that designs parts from 
 ```mermaid
 graph TB
     subgraph Frontend ["Frontend (Electron + TypeScript)"]
-        UI[Orb UI<br/>orb.ts · three.js]
-        MIC[mic.ts<br/>VAD + utterance capture]
-        SOCKET_C[Socket.IO Client]
-        VOICE[player.ts<br/>Gapless PCM playback]
+        UI[JARVIS screen<br/>orb.ts · main.ts · style.css]
+        LINK[ws.ts<br/>Socket.IO adapter]
+        MIC[ada-voice.ts + mic.ts<br/>VAD + utterance capture]
+        VOICE[voice.ts<br/>Audio queue]
     end
     
     subgraph Backend ["Backend (Python 3.11 + FastAPI)"]
@@ -58,9 +58,10 @@ graph TB
         AMBIENT[proactive · wellbeing<br/>ambient_vision · autonomy]
     end
     
-    UI --> SOCKET_C
+    UI --> LINK
+    UI --> VOICE
     MIC -->|POST /stt| SERVER
-    SOCKET_C <--> SERVER
+    LINK <--> SERVER
     SERVER <--> ADA
     ADA --> PROVIDERS
     ADA --> KERNEL
@@ -70,7 +71,7 @@ graph TB
     ADA --> TTS
     AMBIENT --> ADA
     SERVER --> AUTH
-    TTS -->|PCM float32| VOICE
+    TTS -->|PCM float32 via Socket.IO| LINK
 ```
 
 ---
@@ -386,16 +387,18 @@ ada_v2/
 │   ├── model_surgery.py        # Conversational 3D model editing
 │   ├── settings.json           # Tool permissions (auto-synced to the tool registry)
 │   └── reference.jpg           # Your face photo (add this!)
-├── index.html                  # Single page: orb, transcript, composer, lock screen
+├── index.html                  # The JARVIS screen (title and label read A.D.A)
 ├── src/                        # Frontend: TypeScript + Vite + three.js
-│   ├── main.ts                 # Wiring: state, transcript, controls, face-auth lock
-│   ├── orb.ts                  # The orb (derived from JARVIS, see NOTICE.md)
-│   ├── player.ts               # Gapless PCM playback + barge-in anchoring
-│   ├── mic.ts                  # Voice activity detection + utterance capture
-│   ├── socket.ts               # Socket.IO link and payload types
-│   └── style.css               # Layout and palette
-├── licenses/JARVIS-LICENSE.txt # Licence that covers the GUI files derived from JARVIS
-├── NOTICE.md                   # Attribution and licence summary
+│   ├── main.ts                 # JARVIS screen wiring (from JARVIS, three small edits)
+│   ├── orb.ts                  # The orb (from JARVIS, verbatim)
+│   ├── style.css               # Layout and palette (from JARVIS, verbatim)
+│   ├── voice.ts                # Audio queue and mic meter (from JARVIS, verbatim)
+│   ├── ws.ts                   # Transport: JARVIS's socket API over A.D.A's Socket.IO
+│   ├── ada-voice.ts            # Speech input: A.D.A's VAD + /stt
+│   ├── ada-state.ts            # Shared state: backend address, speech timing, face lock
+│   └── mic.ts                  # Voice activity detection + utterance capture
+├── licenses/JARVIS-LICENSE.txt # Licence that covers the files taken from JARVIS
+├── NOTICE.md                   # Which files are JARVIS's, and what changed
 ├── electron/main.js            # Window & IPC setup, spawns the backend
 ├── projects/                   # CAD exports (auto-created)
 ├── _archive/                   # Backups of removed legacy engines (see below)
@@ -437,8 +440,9 @@ This project is not a git repository, so that archive is the only undo. Delete i
 | Limitation | Details |
 |------------|---------|
 | **macOS & Windows** | Tested on macOS 14+ and Windows 10/11. Linux is untested. |
-| **Camera Required** | Face auth needs a working webcam. |
-| **GUI Scope** | The orb GUI does not yet include the CAD viewer, browser frames, HUD panels, settings menu or hand-gesture control that the earlier React GUI had. |
+| **Camera Required** | Face auth needs a working webcam. The JARVIS screen shows the lock as a notice, not the camera picture. |
+| **Voice-First Screen** | The JARVIS screen has no typed input and no transcript panel. Speak to A.D.A, and read her replies in the status line. |
+| **GUI Scope** | Not yet wired to A.D.A on this screen: settings, restart, the CAD viewer, browser frames and HUD panels. |
 | **Network Dependency** | No offline mode. Speech (Groq Whisper in, Mistral Voxtral out) and the brain are all remote, so a dropped connection means she goes quiet. |
 | **Provider Quotas** | Every provider is on a free tier. Heavy CAD iteration is the usual way to hit a limit; the circuit breaker then falls through to the next provider in the chain. |
 | **Wake Word** | Not implemented. She listens only while the app is open and streaming — there is no "Hey Ada" yet. |
@@ -494,7 +498,7 @@ Contributions are welcome! Here's how:
 
 This project is licensed under the **MIT License**, see the [LICENSE](LICENSE) file.
 
-**Exception:** the GUI files derived from JARVIS (`src/orb.ts`, `src/style.css`) are covered by the JARVIS licence, which allows personal and non-commercial use only. See [NOTICE.md](NOTICE.md) before any commercial use.
+**Exception:** the files taken from JARVIS (`index.html`, `src/orb.ts`, `src/style.css`, `src/voice.ts`, `src/main.ts`, `src/ws.ts`) are covered by the JARVIS licence, which allows personal and non-commercial use only. See [NOTICE.md](NOTICE.md) before any commercial use.
 
 ---
 

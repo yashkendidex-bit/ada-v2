@@ -1,20 +1,24 @@
-# Notice: GUI files derived from JARVIS
+# Notice: GUI files taken from JARVIS
 
-The A.D.A interface is partly derived from **JARVIS Voice AI Assistant**
-(https://github.com/ethanplusai/jarvis), Copyright (c) 2026 Ethan Rogers.
-The JARVIS licence is in [`licenses/JARVIS-LICENSE.txt`](licenses/JARVIS-LICENSE.txt),
+The A.D.A screen is the **JARVIS** interface, copied from
+https://github.com/ethanplusai/jarvis (Copyright (c) 2026 Ethan Rogers). The
+JARVIS licence is in [`licenses/JARVIS-LICENSE.txt`](licenses/JARVIS-LICENSE.txt),
 unchanged.
 
 ## Which files it covers
 
-| File | Derived from | What was taken or adapted |
-|------|--------------|---------------------------|
-| `src/orb.ts` | `frontend/src/orb.ts` | Particle set-up, colour palette, state targets, electrons and camera. Motion and link drawing were rewritten (fixed nearest-neighbour graph, frame-rate-independent smoothing). |
-| `src/style.css` | `frontend/src/style.css` and the JARVIS palette | Accent colour, letter-spaced labels, reduced-motion handling. The layout is A.D.A's own. |
+| File | Origin | Change from the original |
+|------|--------|--------------------------|
+| `src/orb.ts` | `frontend/src/orb.ts` | Verbatim. |
+| `src/style.css` | `frontend/src/style.css` | Verbatim. |
+| `src/voice.ts` | `frontend/src/voice.ts` | Verbatim. A.D.A uses its audio queue and mic meter from it. Its Web Speech input is not used; see `src/ada-voice.ts`. |
+| `index.html` | `frontend/index.html` | Page title and on-screen label changed from JARVIS to A.D.A. Favicon line added. |
+| `src/main.ts` | `frontend/src/main.ts` | Speech input imported from `ada-voice.ts`. Settings and Restart menu actions replaced with notices. First-run settings check removed. |
+| `src/ws.ts` | `frontend/src/ws.ts` (replaced) | Same interface, so `main.ts` is unchanged in its use of it. Underneath it speaks A.D.A's Socket.IO events instead of JARVIS's websocket protocol. |
 
-The remaining GUI files (`src/main.ts`, `src/player.ts`, `src/mic.ts`,
-`src/socket.ts`, `index.html`) are A.D.A's own code and fall under the
-MIT licence in [`LICENSE`](LICENSE).
+The rest of the GUI is A.D.A's own code under the MIT licence in
+[`LICENSE`](LICENSE): `src/ada-voice.ts`, `src/ada-state.ts`, `src/mic.ts`,
+`src/env.d.ts`.
 
 ## What this means
 
@@ -24,10 +28,11 @@ MIT licence in [`LICENSE`](LICENSE).
   without a commercial licence from the JARVIS author. That covers selling it,
   using it in a paid product, generating revenue with it, and offering it as a
   hosted service.
-- Those listed files, and any copy or modification of them, therefore carry the
-  JARVIS non-commercial terms, not the MIT terms of the rest of this repository.
+- The files in the table, and any copy or modification of them, therefore carry
+  the JARVIS non-commercial terms, not the MIT terms of the rest of this
+  repository.
 - Any copy of this project that includes those files must keep this notice and
   the JARVIS copyright line.
 
 For commercial use, contact the JARVIS author via https://ethanplus.ai, or
-remove the derived files and rebuild the orb from scratch.
+remove the files in the table above and build a different screen.
