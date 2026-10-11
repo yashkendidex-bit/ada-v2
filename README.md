@@ -1,10 +1,10 @@
 # A.D.A V2 - Advanced Design Assistant
 
 ![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-blue?logo=python)
-![React](https://img.shields.io/badge/React-18.2-61DAFB?logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)
 ![Electron](https://img.shields.io/badge/Electron-28-47848F?logo=electron)
 ![Voice](https://img.shields.io/badge/Voice-Mistral%20Voxtral-FF7000)
-![License](https://img.shields.io/badge/License-MIT-green)
+![License](https://img.shields.io/badge/License-MIT%20%2B%20see%20NOTICE-orange)
 
 > **A.D.A** = **A**dvanced **D**esign **A**ssistant
 
@@ -22,7 +22,7 @@ scheduler, an autonomy ladder, and a 3D assembly engine that designs parts from 
 | **🗣️ Low-Latency Voice** | Streaming conversation with word-level barge-in | Groq Whisper (STT) → Mistral Voxtral (TTS) |
 | **🧊 Assembly CAD** | Multi-part designs from a sentence, with real mates | `cad_v3` engine on build123d / OCCT |
 | **🖨️ 3D Printing** | Slicing and wireless print job submission | OrcaSlicer + Moonraker/OctoPrint |
-| **🖐️ Minority Report UI** | Gesture-controlled window manipulation | MediaPipe Hand Tracking |
+| **🔮 Reactive Orb UI** | Particle orb that follows voice, thinking and playback | TypeScript + three.js |
 | **👁️ Face Authentication** | Secure local biometric login | MediaPipe Face Landmarker |
 | **🌐 Web Agent** | Autonomous browser automation | Playwright + Chromium |
 | **🧠 Persistent Memory** | Facts, episodes and an entity graph across sessions | SQLite kernel + embeddings |
@@ -32,30 +32,17 @@ scheduler, an autonomy ladder, and a 3D assembly engine that designs parts from 
 | **📓 Overnight Dossier** | Research while you sleep, briefed when you wake | `overnight_dossier.py` |
 | **🌅 Ambient Vision** | Periodic one-line read of the room | `ambient_vision.py` |
 
-### 🖐️ Gesture Control Details
-
-ADA's "Minority Report" interface uses your webcam to detect hand gestures:
-
-| Gesture | Action |
-|---------|--------|
-| 🤏 **Pinch** | Confirm action / click |
-| ✋ **Open Palm** | Release the window |
-| ✊ **Close Fist** | "Select" and grab a UI window to drag it |
-
-> **Tip**: Enable the video feed window to see the hand tracking overlay.
-
 ---
 
 ## 🏗️ Architecture Overview
 
 ```mermaid
 graph TB
-    subgraph Frontend ["Frontend (Electron + React)"]
-        UI[React UI]
-        THREE[Three.js 3D Viewer]
-        GESTURE[MediaPipe Gestures]
+    subgraph Frontend ["Frontend (Electron + TypeScript)"]
+        UI[Orb UI<br/>orb.ts · three.js]
+        MIC[mic.ts<br/>VAD + utterance capture]
         SOCKET_C[Socket.IO Client]
-        VOICE[voicePlayer.js<br/>Gapless PCM playback]
+        VOICE[player.ts<br/>Gapless PCM playback]
     end
     
     subgraph Backend ["Backend (Python 3.11 + FastAPI)"]
@@ -72,6 +59,7 @@ graph TB
     end
     
     UI --> SOCKET_C
+    MIC -->|POST /stt| SERVER
     SOCKET_C <--> SERVER
     SERVER <--> ADA
     ADA --> PROVIDERS
@@ -83,7 +71,6 @@ graph TB
     AMBIENT --> ADA
     SERVER --> AUTH
     TTS -->|PCM float32| VOICE
-    CAD -->|STL / STEP| THREE
 ```
 
 ---
@@ -399,10 +386,16 @@ ada_v2/
 │   ├── model_surgery.py        # Conversational 3D model editing
 │   ├── settings.json           # Tool permissions (auto-synced to the tool registry)
 │   └── reference.jpg           # Your face photo (add this!)
-├── src/                        # React frontend
-│   ├── App.jsx                 # Main application shell
-│   ├── components/             # UI components (CadWindow, Settings, ...)
-│   └── lib/voicePlayer.js      # Gapless Web Audio playback + barge-in
+├── index.html                  # Single page: orb, transcript, composer, lock screen
+├── src/                        # Frontend: TypeScript + Vite + three.js
+│   ├── main.ts                 # Wiring: state, transcript, controls, face-auth lock
+│   ├── orb.ts                  # The orb (derived from JARVIS, see NOTICE.md)
+│   ├── player.ts               # Gapless PCM playback + barge-in anchoring
+│   ├── mic.ts                  # Voice activity detection + utterance capture
+│   ├── socket.ts               # Socket.IO link and payload types
+│   └── style.css               # Layout and palette
+├── licenses/JARVIS-LICENSE.txt # Licence that covers the GUI files derived from JARVIS
+├── NOTICE.md                   # Attribution and licence summary
 ├── electron/main.js            # Window & IPC setup, spawns the backend
 ├── projects/                   # CAD exports (auto-created)
 ├── _archive/                   # Backups of removed legacy engines (see below)
@@ -444,7 +437,8 @@ This project is not a git repository, so that archive is the only undo. Delete i
 | Limitation | Details |
 |------------|---------|
 | **macOS & Windows** | Tested on macOS 14+ and Windows 10/11. Linux is untested. |
-| **Camera Required** | Face auth and gesture control need a working webcam. |
+| **Camera Required** | Face auth needs a working webcam. |
+| **GUI Scope** | The orb GUI does not yet include the CAD viewer, browser frames, HUD panels, settings menu or hand-gesture control that the earlier React GUI had. |
 | **Network Dependency** | No offline mode. Speech (Groq Whisper in, Mistral Voxtral out) and the brain are all remote, so a dropped connection means she goes quiet. |
 | **Provider Quotas** | Every provider is on a free tier. Heavy CAD iteration is the usual way to hit a limit; the circuit breaker then falls through to the next provider in the chain. |
 | **Wake Word** | Not implemented. She listens only while the app is open and streaming — there is no "Hey Ada" yet. |
@@ -490,14 +484,17 @@ Contributions are welcome! Here's how:
 
 - **[Google Gemini](https://deepmind.google/technologies/gemini/)** — Native Audio API for real-time voice
 - **[build123d](https://github.com/gumyr/build123d)** — Modern parametric CAD library
-- **[MediaPipe](https://developers.google.com/mediapipe)** — Hand tracking, gesture recognition, and face authentication
+- **[MediaPipe](https://developers.google.com/mediapipe)** — Face authentication
+- **[JARVIS](https://github.com/ethanplusai/jarvis)** by Ethan Rogers — the orb interface the GUI is derived from (non-commercial licence, see [NOTICE.md](NOTICE.md))
 - **[Playwright](https://playwright.dev/)** — Reliable browser automation
 
 ---
 
 ## 📄 License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License**, see the [LICENSE](LICENSE) file.
+
+**Exception:** the GUI files derived from JARVIS (`src/orb.ts`, `src/style.css`) are covered by the JARVIS licence, which allows personal and non-commercial use only. See [NOTICE.md](NOTICE.md) before any commercial use.
 
 ---
 
