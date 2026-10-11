@@ -21,8 +21,13 @@ function createWindow() {
         width: 1920,
         height: 1080,
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false, // For simple IPC/Socket.IO usage
+            // The renderer is a plain web app that talks to the backend over
+            // Socket.IO and HTTP. It needs no Node access, so it runs isolated
+            // and sandboxed: a script injected into the page cannot reach the
+            // filesystem or spawn processes.
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
         },
         backgroundColor: '#000000',
         frame: false, // Frameless for custom UI
@@ -100,10 +105,11 @@ function startPythonBackend() {
 app.whenReady().then(() => {
     // Allow mic/camera access - Electron denies getUserMedia by default,
     // which silently kills Web Speech API voice input.
+    // Only media (microphone) is needed. Everything else is refused.
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-        callback(true);
+        callback(permission === 'media');
     });
-    session.defaultSession.setPermissionCheckHandler((webContents, permission) => true);
+    session.defaultSession.setPermissionCheckHandler((webContents, permission) => permission === 'media');
 
     ipcMain.on('window-minimize', () => {
         if (mainWindow) mainWindow.minimize();
