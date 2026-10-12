@@ -1,348 +1,720 @@
 /**
- * JARVIS — Multi-mode particle visualization.
+ * The A.D.A orb: a teal particle ring that crumples when she speaks.
  *
- * Floating particles with line connections between nearby ones.
- * Lines fade in/out based on state. Transition tumble on state change.
- * Speaking pulls particles closer for denser connections.
+ * Drawn to match a reference video of the Iron Man 3 second-screen JARVIS app.
+ * Measured from that video, at radius R = 1:
+ *   - a dense outer band at 1.00, a second ring at 0.91 and a thin solid ring
+ *     at 0.86, all perfect circles when calm;
+ *   - a faint ring at 0.64, a scalloped ring near 0.5, and a honeycomb sphere
+ *     at 0.30 with a bright rim;
+ *   - while a voice plays, the outer rings fold into faceted sheets. The folds
+ *     follow the voice's loudness with no visible lag, rise in about three
+ *     frames, and snap back between syllables;
+ *   - colour: hue about 178 degrees on a near-black ground, with a slanted
+ *     teal light column behind the orb.
+ *
+ * Everything is a GPU point sprite and the folding is computed in the vertex
+ * shader, so each frame costs a handful of uniform updates on the CPU. Time
+ * comes from the browser's frame timestamp, so the motion is the same at 60 Hz
+ * and 144 Hz.
+ *
+ * No code or imagery from the reference is used. See NOTICE.md.
  */
 
 import * as THREE from "three";
+import { VoiceEnvelope, decay, easeTo, follow, rmsOf, unitRange } from "./orb-motion";
 
 // "compacting": the brain is being swapped for a fresh one behind the scenes
 // (a context rotation). He answers nothing for a few seconds, and silence with
-// no explanation reads as a crash. It used to be followed by a spoken line;
-// the user found that annoying, so the orb carries it instead: dim, slow,
-// drawn inward, in a cooler colour -- unmistakably not "about to answer".
+// no explanation reads as a crash. The orb carries it instead: dim, slow,
+// drawn inward -- unmistakably not "about to answer".
 export type OrbState = "idle" | "listening" | "thinking" | "speaking" | "compacting";
 
 export interface Orb {
   setState(s: OrbState): void;
   setAnalyser(a: AnalyserNode | null): void;
+  /** Microphone RMS, called every frame while the mic is live. Silence stops it counting. */
+  setMicLevel(rms: number): void;
   destroy(): void;
 }
 
-export function createOrb(canvas: HTMLCanvasElement): Orb {
-  let destroyed = false;
-  const N = 2000;
+/** Orb centre as a fraction of the window height (the reference sits just above the middle). */
+const CENTER_Y = 0.49;
+/** Orb diameter: 79% of the width in a tall window (as in the reference), at most 62% of the height. */
+const FIT_W = 0.79;
+const FIT_H = 0.62;
+const FOV = 22;
+/** The reference orb is 190 px in radius; point sizes are authored at that scale. */
+const REF_RADIUS_PX = 190;
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setClearColor(0x050508, 1);
+// Microphone RMS: at or below the floor is room noise; at the ceiling the orb
+// is fully responding.
+const MIC_FLOOR = 0.012;
+const MIC_CEIL = 0.06;
+const MIC_STALE_MS = 250;
+/** How far the ring folds at full drive, in orb radii. Calibrated against the reference (see NOTICE.md). */
+const AMP = 0.2;
 
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
-  camera.position.z = 80;
+/**
+ * Strengths of the three bright rings, tuned against the reference's measured
+ * pixel values at the same scale (see NOTICE.md). Alpha is per sprite; the rings
+ * are dense, so many sprites overlap and build up the soft band.
+ */
+const BAND = {
+  a: { radius: 1.0, strands: 24, spacing: 0.0038, jitter: 0.0015, size: 3.4, alpha: 0.019 },
+  b: { radius: 0.925, strands: 5, spacing: 0.011, jitter: 0.003, size: 2.6, alpha: 0.055 },
+  thin: { radius: 0.862, strands: 1, spacing: 0, jitter: 0.008, size: 3.2, alpha: 0.075 },
+};
 
-  // ── Particles ──
-  const geo = new THREE.BufferGeometry();
-  const pos = new Float32Array(N * 3);
-  const vel = new Float32Array(N * 3);
-  const phase = new Float32Array(N);
+/** Ring colour. Hue about 178 degrees, as measured. */
+const COLOR = new THREE.Color(0.2, 0.88, 0.83);
 
-  for (let i = 0; i < N; i++) {
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    const r = Math.pow(Math.random(), 0.5) * 25;
-    pos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-    pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-    pos[i * 3 + 2] = r * Math.cos(phi);
-    phase[i] = Math.random() * 1000;
+// ---------------------------------------------------------------------------
+// Shaders
+// ---------------------------------------------------------------------------
+
+const NOISE = /* glsl */ `
+float h2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+// Noise that is linear around the ring (so its corners read as facets) and
+// smooth through time. cells: how many facets around; tt: time in keyframes.
+float facet(float th, float cells, float tt, float seed) {
+  float x = th / 6.28318530718 * cells;
+  float i = floor(x);
+  float f = x - i;
+  float i0 = mod(i, cells);
+  float i1 = mod(i + 1.0, cells);
+  float t0 = mod(floor(tt), 1024.0);
+  float tf = fract(tt);
+  tf = tf * tf * (3.0 - 2.0 * tf);
+  float s = seed * 17.0;
+  float v0 = mix(h2(vec2(i0 + s, t0)), h2(vec2(i1 + s, t0)), f);
+  float v1 = mix(h2(vec2(i0 + s, t0 + 1.0)), h2(vec2(i1 + s, t0 + 1.0)), f);
+  return mix(v0, v1, tf) * 2.0 - 1.0;
+}
+`;
+
+const RING_VERT = /* glsl */ `
+precision highp float;
+uniform float uTime, uAmp, uWide, uScale, uPx, uGlow, uDust;
+attribute vec4 aP;   // strand, weight, size, alpha
+attribute vec2 aR;   // random, kind (0 plain, 1 ticked, 2 dust)
+varying float vA;
+${NOISE}
+void main() {
+  float th = position.x, rad = position.y, off = position.z;
+  float strand = aP.x, weight = aP.y, size = aP.z, alpha = aP.w;
+  float rnd = aR.x, kind = aR.y;
+
+  float tt = uTime * 7.5;
+  float low = facet(th, 6.0, tt * 0.4, 1.0);
+  float mid = facet(th, 15.0, tt, 2.0);
+  float hi  = facet(th, 31.0, tt * 1.3, 3.0);
+  float lump = (low + 0.7 * mid + 0.4 * hi) / 2.1;
+  // Neighbouring strands run the same motion a few milliseconds apart, so they
+  // move together like a curtain; strands far apart move independently.
+  float ts = tt + strand * 0.15;
+  float own = (facet(th, 11.0, ts * 1.1, 5.0) + 0.5 * facet(th, 23.0, ts * 1.25, 11.0)) / 1.5;
+  float d = (lump * 0.4 + own * 0.6) * weight;
+  float z = facet(th, 9.0, ts * 0.9, 7.0) * weight;
+
+  // Driven bands splay apart into separate sheets.
+  float spread = 1.0 + uWide * 1.4 * abs(own);
+  float r = (rad + off * spread) * uScale + d * uAmp;
+  if (kind > 1.5) r += uDust * (0.01 + 0.06 * rnd);
+
+  vec4 mv = modelViewMatrix * vec4(cos(th) * r, sin(th) * r, z * uAmp * 0.9, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = size * uPx * (0.85 + 0.3 * rnd);
+
+  float tick = (kind > 0.5 && kind < 1.5) ? 0.9 + 0.1 * step(0.5, fract(th * 23.873)) : 1.0;
+  float twinkle = 0.85 + 0.15 * sin(uTime * (1.5 + rnd * 3.0) + rnd * 40.0);
+  float a = alpha * uGlow * tick * twinkle;
+  vA = kind > 1.5 ? a * uDust * 2.0 : a;
+}
+`;
+
+const SOFT_FRAG = /* glsl */ `
+precision highp float;
+uniform vec3 uColor;
+varying float vA;
+void main() {
+  vec2 c = gl_PointCoord - 0.5;
+  float d = dot(c, c) * 4.0;
+  if (d > 1.0) discard;
+  float a = 1.0 - d;
+  vec3 col = mix(uColor, vec3(0.8, 1.0, 0.98), pow(a, 3.0) * 0.6);
+  gl_FragColor = vec4(col, a * a * vA);
+}
+`;
+
+const CORE_VERT = /* glsl */ `
+precision highp float;
+uniform float uTime, uSpin, uTilt, uCore, uPx, uGlow, uSparkle;
+attribute vec4 aP;   // size, alpha, kind (0 edge, 1 vertex, 2 sparkle, 3 rim), phase
+varying float vA;
+varying float vWhite;
+void main() {
+  vec3 q = position;
+  float kind = aP.z;
+  float depth = 1.0;
+  if (kind < 2.5) {
+    float cs = cos(uSpin), sn = sin(uSpin);
+    q = vec3(cs * q.x + sn * q.z, q.y, -sn * q.x + cs * q.z);
+    float ct = cos(uTilt), st = sin(uTilt);
+    q = vec3(q.x, ct * q.y - st * q.z, st * q.y + ct * q.z);
+    depth = smoothstep(-0.35, 0.7, q.z);
+  }
+  vec4 mv = modelViewMatrix * vec4(q * uCore, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = aP.x * uPx;
+  float a = aP.y * mix(0.2, 1.0, depth);
+  vWhite = 0.0;
+  if (kind > 1.5 && kind < 2.5) {
+    float tw = 0.5 + 0.5 * sin(uTime * (1.2 + aP.w * 2.0) * (1.0 + uSparkle) + aP.w * 50.0);
+    a *= pow(tw, 8.0) * 2.4;
+    vWhite = 1.0;
+  }
+  vA = a * uGlow;
+}
+`;
+
+const CORE_FRAG = /* glsl */ `
+precision highp float;
+uniform vec3 uColor;
+varying float vA;
+varying float vWhite;
+void main() {
+  vec2 c = gl_PointCoord - 0.5;
+  float d = dot(c, c) * 4.0;
+  if (d > 1.0) discard;
+  float a = 1.0 - d;
+  gl_FragColor = vec4(mix(uColor, vec3(0.85, 1.0, 0.98), vWhite), a * a * vA);
+}
+`;
+
+const ARC_VERT = /* glsl */ `
+precision highp float;
+uniform float uPx, uThink, uHeadA, uHeadB, uScale, uGlow;
+attribute vec4 aP;   // which arc (0/1), size, alpha, random
+varying float vA;
+float tail(float x) {
+  x = mod(x, 6.28318530718);
+  return exp(-x * 1.7) * (1.0 - smoothstep(5.2, 6.28, x));
+}
+void main() {
+  float th = position.x;
+  float r = (position.y + position.z) * uScale;
+  vec4 mv = modelViewMatrix * vec4(cos(th) * r, sin(th) * r, 0.0, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = aP.y * uPx;
+  float t = aP.x < 0.5 ? tail(uHeadA - th) : tail(th - uHeadB);
+  vA = aP.z * uThink * t * uGlow;
+}
+`;
+
+const TEXT_VERT = /* glsl */ `
+precision highp float;
+uniform float uForm, uTime, uPx, uGlow;
+attribute vec4 aP;   // random, random, size, alpha
+varying float vA;
+void main() {
+  float e = uForm * uForm * (3.0 - 2.0 * uForm);
+  float ang = aP.x * 6.28318530718 + uTime * 0.5 * (aP.y - 0.5);
+  float rr = 0.2 + 0.75 * aP.y;
+  vec2 scatter = vec2(cos(ang), sin(ang)) * rr;
+  vec2 p = mix(scatter, position.xy, e);
+  p.x += sin(uTime * 30.0 + aP.y * 80.0) * 0.004 * e;   // scanline shimmer
+  vec4 mv = modelViewMatrix * vec4(p, 0.0, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = aP.z * uPx;
+  vA = aP.w * e * (0.5 + 0.5 * aP.x) * uGlow;
+}
+`;
+
+// Background: near black with the slanted teal light column measured from the
+// reference. X and Y are in orb radii, from the orb centre, Y downward.
+const BG_VERT = /* glsl */ `
+void main() { gl_Position = vec4(position.xy, 0.9999, 1.0); }
+`;
+
+const BG_FRAG = /* glsl */ `
+precision highp float;
+uniform vec2 uRes;      // CSS px
+uniform vec2 uCenter;   // orb centre, CSS px from the top left
+uniform float uRadius;  // orb radius, CSS px
+uniform float uPixelRatio;
+uniform float uGlow;
+float seg(float y, float a, float b, float va, float vb) {
+  return mix(va, vb, clamp((y - a) / (b - a), 0.0, 1.0));
+}
+float hexDist(vec2 p) {
+  p = abs(p);
+  return max(dot(p, normalize(vec2(1.0, 1.7320508))), p.x);
+}
+void main() {
+  vec2 px = vec2(gl_FragCoord.x, uRes.y * uPixelRatio - gl_FragCoord.y) / uPixelRatio;
+  float X = (px.x - uCenter.x) / uRadius;
+  float Y = (px.y - uCenter.y) / uRadius;
+
+  // Brightness along the column, in 8-bit green units, from the reference.
+  float I = seg(Y, -2.3, -1.83, 5.0, 13.0);
+  I = seg(Y, -1.83, -1.51, I, 25.0);
+  I = seg(Y, -1.51, -1.19, I, 34.0);
+  I = seg(Y, -1.19, 0.0, I, 34.0);
+  I = seg(Y, 0.0, 1.23, I, 41.0);
+  I = seg(Y, 1.23, 1.6, I, 40.0);
+  I = seg(Y, 1.6, 2.4, I, 33.0);
+
+  float xc = -0.096 - 0.35 * Y;                      // the column leans toward lower left
+  float dx = X - xc;
+  float t = smoothstep(-1.2, 1.2, Y);
+  float w = mix(0.8, 1.0, t);
+  float beam = exp(-pow(abs(dx / w), 2.2));
+  float g = I / 255.0 * beam;
+
+  // A very faint honeycomb at the lower left, as in the reference.
+  vec2 hp = vec2(X + 1.2, Y - 1.5) * 5.0;
+  vec2 r = vec2(1.0, 1.7320508);
+  vec2 a = mod(hp, r) - r * 0.5;
+  vec2 b = mod(hp - r * 0.5, r) - r * 0.5;
+  vec2 gv = dot(a, a) < dot(b, b) ? a : b;
+  float hex = smoothstep(0.05, 0.0, abs(0.5 - hexDist(gv)));
+  float hexMask = exp(-pow(length((vec2(X, Y) - vec2(-1.3, 1.5)) / vec2(0.9, 0.7)), 2.0));
+  g += hex * hexMask * 0.014;
+
+  // The interior of the ring is lit, not black.
+  g += (1.0 - smoothstep(0.7, 1.02, length(vec2(X, Y)))) * 0.03;
+
+  // A soft glow behind the core.
+  g += exp(-pow(length(vec2(X, Y)) / 0.32, 2.0)) * 0.05;
+
+  g *= uGlow;
+  gl_FragColor = vec4(0.0, g * 0.96, g * 1.06, 1.0);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+
+/** Grows typed attribute data without knowing the size in advance. */
+class Buf {
+  pos: number[] = [];
+  p: number[] = [];
+  r: number[] = [];
+  get count(): number { return this.pos.length / 3; }
+}
+
+function rnd(): number { return Math.random(); }
+
+/**
+ * A ring of points. strands: how many independent sheets the band splits into
+ * when it is driven. kind: 0 plain, 1 ticked, 2 dust.
+ */
+function addRing(
+  b: Buf, count: number, radius: number, spacing: number, jitter: number,
+  size: number, alpha: number, weight: number, strands: number, kind: number,
+): void {
+  for (let i = 0; i < count; i++) {
+    const th = rnd() * Math.PI * 2;
+    const strand = Math.floor(rnd() * strands);
+    // Each strand is a thin sheet at its own radial offset. Calm, they stack into
+    // one soft band; driven, they part and fold independently.
+    const off = (strand - (strands - 1) / 2) * spacing + (rnd() * 2 - 1) * jitter;
+    b.pos.push(th, radius, off);
+    // The outer sheets of the band read brighter than the inner ones.
+    const edge = kind === 1 && strands > 1 ? 0.55 + 0.9 * (strand / (strands - 1)) : 1;
+    b.p.push(strand, weight, size * (0.8 + 0.5 * rnd()), alpha * edge);
+    b.r.push(rnd(), kind);
+  }
+}
+
+function ringGeometry(b: Buf, attrs: { p: string; r?: string }): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(b.pos), 3));
+  g.setAttribute(attrs.p, new THREE.BufferAttribute(new Float32Array(b.p), 4));
+  if (attrs.r) g.setAttribute(attrs.r, new THREE.BufferAttribute(new Float32Array(b.r), 2));
+  return g;
+}
+
+/** Honeycomb on a sphere: the dual of a subdivided icosahedron. Hexagons everywhere but twelve pentagons. */
+function buildCore(): THREE.BufferGeometry {
+  const ico = new THREE.IcosahedronGeometry(1, 7); // already non-indexed: three faces' worth of vertices each
+  const src = ico.getAttribute("position") as THREE.BufferAttribute;
+  const faces = src.count / 3;
+  const key = (i: number) =>
+    `${Math.round(src.getX(i) * 1e4)},${Math.round(src.getY(i) * 1e4)},${Math.round(src.getZ(i) * 1e4)}`;
+  const vid = new Map<string, number>();
+  const id = (i: number) => {
+    const k = key(i);
+    let v = vid.get(k);
+    if (v === undefined) { v = vid.size; vid.set(k, v); }
+    return v;
+  };
+
+  const centre: THREE.Vector3[] = [];
+  const edgeFaces = new Map<string, number[]>();
+  for (let f = 0; f < faces; f++) {
+    const v = [id(f * 3), id(f * 3 + 1), id(f * 3 + 2)];
+    const c = new THREE.Vector3();
+    for (let k = 0; k < 3; k++) c.add(new THREE.Vector3(src.getX(f * 3 + k), src.getY(f * 3 + k), src.getZ(f * 3 + k)));
+    centre.push(c.normalize());
+    for (let k = 0; k < 3; k++) {
+      const a = v[k], bb = v[(k + 1) % 3];
+      const e = a < bb ? `${a}_${bb}` : `${bb}_${a}`;
+      const list = edgeFaces.get(e);
+      if (list) list.push(f); else edgeFaces.set(e, [f]);
+    }
   }
 
-  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const pos: number[] = [];
+  const p: number[] = [];
+  const dotsPerEdge = 5;
+  for (const list of edgeFaces.values()) {
+    if (list.length !== 2) continue;
+    const a = centre[list[0]], c = centre[list[1]];
+    for (let s = 0; s < dotsPerEdge; s++) {
+      const q = a.clone().lerp(c, (s + 0.5) / dotsPerEdge).normalize();
+      pos.push(q.x, q.y, q.z);
+      p.push(1.2, 0.2, 0, 0);
+    }
+  }
+  for (const c of centre) {
+    pos.push(c.x, c.y, c.z);
+    p.push(1.8, 0.3, 1, 0);
+  }
+  // A few white sparkles that come and go.
+  for (let i = 0; i < 14; i++) {
+    const th = rnd() * Math.PI * 2, ph = Math.acos(2 * rnd() - 1);
+    pos.push(Math.sin(ph) * Math.cos(th), Math.sin(ph) * Math.sin(th), Math.cos(ph));
+    p.push(2.6, 0.9, 2, rnd());
+  }
+  // Bright rim, fixed in front of the spinning sphere, and a faint outer ring.
+  for (let i = 0; i < 1500; i++) {
+    const th = (i / 1500) * Math.PI * 2;
+    pos.push(Math.cos(th) * 1.03, Math.sin(th) * 1.03, 0);
+    p.push(1.9, 0.1, 3, 0);
+  }
+  for (let i = 0; i < 1800; i++) {
+    const th = (i / 1800) * Math.PI * 2;
+    pos.push(Math.cos(th) * 1.2, Math.sin(th) * 1.2, 0);
+    p.push(1.5, 0.04, 3, 0);
+  }
+  ico.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+  g.setAttribute("aP", new THREE.BufferAttribute(new Float32Array(p), 4));
+  return g;
+}
 
-  const mat = new THREE.PointsMaterial({
-    color: 0x4ca8e8, size: 0.4, transparent: true, opacity: 0.6,
-    sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false,
-  });
+/** Points that spell the boot word, in orb radii. */
+function buildText(word: string): THREE.BufferGeometry {
+  const W = 720, H = 240;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const cx = cv.getContext("2d");
+  const pos: number[] = [];
+  const p: number[] = [];
+  if (cx) {
+    cx.fillStyle = "#fff";
+    cx.textAlign = "center";
+    cx.textBaseline = "middle";
+    cx.font = "italic 900 170px 'Arial Black', Impact, 'Helvetica Neue', Arial, sans-serif";
+    cx.fillText(word, W / 2, H / 2 + 6);
+    const img = cx.getImageData(0, 0, W, H).data;
+    const step = 3;
+    for (let y = 0; y < H; y += step) {
+      for (let x = 0; x < W; x += step) {
+        if (img[(y * W + x) * 4 + 3] < 128) continue;
+        // 440 canvas px span 1.18 orb radii.
+        pos.push((x - W / 2) / 440 * 1.18, -(y - H / 2) / 440 * 1.18, 0);
+        p.push(rnd(), rnd(), 1.2 + rnd() * 0.5, 0.5 + 0.5 * rnd());
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+  g.setAttribute("aP", new THREE.BufferAttribute(new Float32Array(p), 4));
+  return g;
+}
 
-  const points = new THREE.Points(geo, mat);
-  scene.add(points);
+// ---------------------------------------------------------------------------
+// The orb
+// ---------------------------------------------------------------------------
 
-  // ── Connection lines ──
-  const MAX_LINES = 8000;
-  const linePos = new Float32Array(MAX_LINES * 6);
-  const lineGeo = new THREE.BufferGeometry();
-  lineGeo.setAttribute("position", new THREE.BufferAttribute(linePos, 3));
-  lineGeo.setDrawRange(0, 0);
+interface Look { glow: number; base: number; scale: number; think: number; spin: number; hear: number; }
+const LOOK: Record<OrbState, Look> = {
+  idle:       { glow: 0.55, base: 0.004, scale: 1.0,  think: 0, spin: 0.12, hear: 0 },
+  listening:  { glow: 1.0,  base: 0.006, scale: 1.0,  think: 0, spin: 0.2,  hear: 0.45 },
+  thinking:   { glow: 0.95, base: 0.012, scale: 0.985, think: 1, spin: 0.9,  hear: 0.25 },
+  speaking:   { glow: 1.0,  base: 0.006, scale: 1.0,  think: 0, spin: 0.35, hear: 0.2 },
+  compacting: { glow: 0.32, base: 0.002, scale: 0.8,  think: 0, spin: 0.05, hear: 0 },
+};
 
-  const lineMat = new THREE.LineBasicMaterial({
-    color: 0x4ca8e8, transparent: true, opacity: 0.0,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
+export function createOrb(canvas: HTMLCanvasElement): Orb {
+  let destroyed = false;
 
-  const lines = new THREE.LineSegments(lineGeo, lineMat);
-  scene.add(lines);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x000000, 1);
 
-  // ── Electrons — bright dots that travel along connections ──
-  const MAX_ELECTRONS = 200;
-  const electronGeo = new THREE.BufferGeometry();
-  const electronPos = new Float32Array(MAX_ELECTRONS * 3);
-  electronGeo.setAttribute("position", new THREE.BufferAttribute(electronPos, 3));
-  electronGeo.setDrawRange(0, 0);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
+  const group = new THREE.Group();
+  scene.add(group);
 
-  const electronMat = new THREE.PointsMaterial({
-    color: 0xffffff, size: 0.8, transparent: true, opacity: 1.0,
-    sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false,
-  });
+  // ── Background ──
+  const bgU = {
+    uRes: { value: new THREE.Vector2(1, 1) },
+    uCenter: { value: new THREE.Vector2(0, 0) },
+    uRadius: { value: REF_RADIUS_PX },
+    uPixelRatio: { value: 1 },
+    uGlow: { value: 1 },
+  };
+  const bg = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.ShaderMaterial({
+      vertexShader: BG_VERT, fragmentShader: BG_FRAG, uniforms: bgU,
+      depthTest: false, depthWrite: false,
+    }),
+  );
+  bg.frustumCulled = false;
+  bg.renderOrder = -10;
+  scene.add(bg);
 
-  const electrons = new THREE.Points(electronGeo, electronMat);
-  scene.add(electrons);
+  // ── Rings ──
+  const ringU = {
+    uTime: { value: 0 }, uAmp: { value: 0 }, uWide: { value: 0 }, uScale: { value: 1 },
+    uPx: { value: 1 }, uGlow: { value: 1 }, uDust: { value: 0 }, uColor: { value: COLOR },
+  };
+  const additive = { transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending } as const;
+  const ringMat = new THREE.ShaderMaterial({ vertexShader: RING_VERT, fragmentShader: SOFT_FRAG, uniforms: ringU, ...additive });
 
-  // Each electron: start point, end point, progress (0-1), speed
-  interface Electron { sx: number; sy: number; sz: number; ex: number; ey: number; ez: number; t: number; speed: number; }
-  const activeElectrons: Electron[] = [];
-  let electronSpawnRate = 0;
-  let targetElectronRate = 0;
-  let lastElectronSpawn = 0; // timestamp of last spawn
+  const rb = new Buf();
+  // Soft, wide sprites at low alpha: the reference is a continuous teal strip, not a dotted line.
+  addRing(rb, 70000, BAND.a.radius, BAND.a.spacing, BAND.a.jitter, BAND.a.size, BAND.a.alpha, 1.0, BAND.a.strands, 1); // outer band, twenty-four sheets
+  addRing(rb, 12000, BAND.b.radius, BAND.b.spacing, BAND.b.jitter, BAND.b.size, BAND.b.alpha, 0.85, BAND.b.strands, 0); // second ring
+  addRing(rb, 5000, BAND.thin.radius, BAND.thin.spacing, BAND.thin.jitter, BAND.thin.size, BAND.thin.alpha, 0.35, 1, 0); // thin solid ring
+  addRing(rb, 2500, 0.64, 0, 0.004, 2.2, 0.003, 0.05, 1, 0);                                // faint ring
+  addRing(rb, 450, 1.0, 0.0075, 0.003, 1.6, 0.14, 1.0, 12, 2);                                    // dust thrown off the band
+  for (let i = 0; i < 150; i++) {                                                       // sparse bright ticks in the band
+    rb.pos.push((i / 150) * Math.PI * 2, 0.985, 0);
+    rb.p.push(0, 1.0, 2.4, 0.1);
+    rb.r.push(rnd(), 0);
+  }
+  const rings = new THREE.Points(ringGeometry(rb, { p: "aP", r: "aR" }), ringMat);
+  rings.frustumCulled = false;
+  group.add(rings);
 
-  // Store active connections for electron spawning
-  let activeConnections: { x1: number; y1: number; z1: number; x2: number; y2: number; z2: number }[] = [];
+  // Scalloped ring around the core: a ring whose radius ripples. Slowly turning, so it is its own object.
+  const sb = new Buf();
+  for (let i = 0; i < 2600; i++) {
+    const th = (i / 2600) * Math.PI * 2 + rnd() * 0.002;
+    const r = 0.52 + 0.022 * Math.abs(Math.sin(th * 14));
+    sb.pos.push(th, r, (rnd() * 2 - 1) * 0.003);
+    sb.p.push(0, 0.02, 1.8 * (0.8 + 0.5 * rnd()), 0.012);
+    sb.r.push(rnd(), 0);
+  }
+  for (let i = 0; i < 1600; i++) {
+    const th = (i / 1600) * Math.PI * 2;
+    sb.pos.push(th, 0.455, (rnd() * 2 - 1) * 0.003);
+    sb.p.push(0, 0.02, 1.6, 0.006);
+    sb.r.push(rnd(), 0);
+  }
+  const scallop = new THREE.Points(ringGeometry(sb, { p: "aP", r: "aR" }), ringMat);
+  scallop.frustumCulled = false;
+  group.add(scallop);
 
-  // ── State ──
+  // ── Core ──
+  const coreU = {
+    uTime: { value: 0 }, uSpin: { value: 0 }, uTilt: { value: 0 }, uCore: { value: 0.3 },
+    uPx: { value: 1 }, uGlow: { value: 1 }, uSparkle: { value: 0 }, uColor: { value: COLOR },
+  };
+  const core = new THREE.Points(
+    buildCore(),
+    new THREE.ShaderMaterial({ vertexShader: CORE_VERT, fragmentShader: CORE_FRAG, uniforms: coreU, ...additive }),
+  );
+  core.frustumCulled = false;
+  group.add(core);
+
+  // ── Thinking arcs: two bright arcs sweeping opposite ways ──
+  const ab = new Buf();
+  for (let arc = 0; arc < 2; arc++) {
+    const radius = arc === 0 ? 0.78 : 0.7;
+    for (let i = 0; i < 1500; i++) {
+      ab.pos.push(rnd() * Math.PI * 2, radius, (rnd() * 2 - 1) * 0.004);
+      ab.p.push(arc, 1.3 * (0.8 + 0.5 * rnd()), 0.9, rnd());
+    }
+  }
+  const arcU = {
+    uPx: { value: 1 }, uThink: { value: 0 }, uHeadA: { value: 0 }, uHeadB: { value: 0 },
+    uScale: { value: 1 }, uGlow: { value: 1 }, uColor: { value: COLOR },
+  };
+  const arcs = new THREE.Points(
+    ringGeometry(ab, { p: "aP" }),
+    new THREE.ShaderMaterial({ vertexShader: ARC_VERT, fragmentShader: SOFT_FRAG, uniforms: arcU, ...additive }),
+  );
+  arcs.frustumCulled = false;
+  group.add(arcs);
+
+  // ── Boot word ──
+  const textU = {
+    uForm: { value: 0 }, uTime: { value: 0 }, uPx: { value: 1 }, uGlow: { value: 1 }, uColor: { value: COLOR },
+  };
+  const text = new THREE.Points(
+    buildText("A.D.A"),
+    new THREE.ShaderMaterial({ vertexShader: TEXT_VERT, fragmentShader: SOFT_FRAG, uniforms: textU, ...additive }),
+  );
+  text.frustumCulled = false;
+  group.add(text);
+
+  // ── Layout ──
+  function layout(): void {
+    const W = window.innerWidth, H = window.innerHeight;
+    const pr = renderer.getPixelRatio();
+    renderer.setSize(W, H);
+    const radius = Math.min(FIT_W * W, FIT_H * H) / 2;
+    const hWorld = H / radius;                                    // orb radii visible from top to bottom
+    camera.aspect = W / H;
+    camera.position.set(0, 0, hWorld / (2 * Math.tan((FOV * Math.PI) / 360)));
+    camera.updateProjectionMatrix();
+    group.position.y = (0.5 - CENTER_Y) * hWorld;
+    const px = pr * (radius / REF_RADIUS_PX);
+    ringU.uPx.value = px; coreU.uPx.value = px; arcU.uPx.value = px; textU.uPx.value = px;
+    bgU.uRes.value.set(W, H);
+    bgU.uCenter.value.set(W / 2, CENTER_Y * H);
+    bgU.uRadius.value = radius;
+    bgU.uPixelRatio.value = pr;
+  }
+  layout();
+  window.addEventListener("resize", layout);
+
+  // ── Live state ──
   let state: OrbState = "idle";
-  let targetRadius = 25, currentRadius = 25;
-  let targetSpeed = 0.3, currentSpeed = 0.3;
-  let targetBright = 0.6, currentBright = 0.6;
-  let targetSize = 0.4, currentSize = 0.4;
-  let lineAmount = 0, targetLineAmount = 0;
-  let lineDistance = 8;
-
-  // Transition tumble
-  let spinX = 0, spinY = 0, spinZ = 0;
-  let transitionEnergy = 0;
   let lastState: OrbState = "idle";
-
-  // Depth Z
-  let cloudZ = 0, cloudZVel = 0;
-
-  // ── Audio ──
+  let glow = LOOK.idle.glow, base = LOOK.idle.base, scale = LOOK.idle.scale;
+  let think = 0, spinRate = LOOK.idle.spin;
+  let spin = 0;
+  let pulse = 0;
+  let dust = 0;
+  let hear = 0;
+  let micRms = 0, micAt = 0;
   let analyser: AnalyserNode | null = null;
-  let freqData = new Uint8Array(64);
-  let bass = 0, mid = 0;
+  let timeData = new Float32Array(1024);
+  const voice = new VoiceEnvelope();
+  let headA = 0, headB = 0;
+  let last = -1;
+  let t = 0;
+  const BOOT_START = 0.4, BOOT_FORM = 1.8, BOOT_HOLD = 2.4, BOOT_FADE = 1.4;
 
-  const clock = new THREE.Clock();
-
-  function animate() {
+  function frame(ts: number): void {
     if (destroyed) return;
-    requestAnimationFrame(animate);
-    const t = clock.getElapsedTime();
+    requestAnimationFrame(frame);
 
-    switch (state) {
-      case "idle":
-        targetRadius = 28; targetSpeed = 0.2; targetBright = 0.5; targetSize = 0.35;
-        targetLineAmount = 0.15; targetElectronRate = 0; break;
-      case "listening":
-        targetRadius = 22; targetSpeed = 0.3; targetBright = 0.65; targetSize = 0.4;
-        targetLineAmount = 0.4; targetElectronRate = 0; break;
-      case "thinking":
-        targetRadius = 16; targetSpeed = 0.5; targetBright = 0.7; targetSize = 0.3;
-        targetLineAmount = 1.0; targetElectronRate = 0.015; break;
-      case "speaking":
-        targetRadius = 18; targetSpeed = 0.2; targetBright = 0.7; targetSize = 0.4;
-        targetLineAmount = 0.8; targetElectronRate = 0; break;
-      case "compacting":
-        // Smaller than idle, slower than anything, half the brightness, no
-        // connecting lines: a held breath, not a working mind.
-        targetRadius = 12; targetSpeed = 0.08; targetBright = 0.28; targetSize = 0.28;
-        targetLineAmount = 0.0; targetElectronRate = 0; break;
+    // Time comes from the frame timestamp: steady at any refresh rate.
+    if (last < 0) last = ts;
+    const dt = Math.min((ts - last) / 1000, 0.05);
+    last = ts;
+    t += dt;
+
+    const look = LOOK[state];
+    glow = easeTo(glow, look.glow, 3, dt);
+    base = easeTo(base, look.base, 3, dt);
+    scale = easeTo(scale, look.scale, 2.2, dt);
+    think = easeTo(think, look.think, 3.5, dt);
+    spinRate = easeTo(spinRate, look.spin, 2, dt);
+
+    if (state !== lastState) {
+      if (state === "speaking") pulse = 1;
+      else if (state === "thinking") pulse = 0.5;
+      lastState = state;
     }
+    pulse = decay(pulse, 0.4, dt);
 
-    currentRadius += (targetRadius - currentRadius) * 0.02;
-    currentSpeed += (targetSpeed - currentSpeed) * 0.02;
-    currentBright += (targetBright - currentBright) * 0.02;
-    currentSize += (targetSize - currentSize) * 0.02;
-    lineAmount += (targetLineAmount - lineAmount) * 0.02;
-    electronSpawnRate += (targetElectronRate - electronSpawnRate) * 0.02;
-
-    // Transition energy
-    if (state !== lastState) { transitionEnergy = 1.0; lastState = state; }
-    transitionEnergy *= 0.985;
-    if (transitionEnergy > 0.05) {
-      spinX += transitionEnergy * 0.012 * Math.sin(t * 1.7);
-      spinY += transitionEnergy * 0.015;
-      spinZ += transitionEnergy * 0.008 * Math.cos(t * 1.3);
-    }
-
-    // Audio
-    bass = 0; mid = 0;
+    // Her voice: loudness of what is playing, straight from the analyser.
+    let rms = 0;
     if (analyser) {
-      analyser.getByteFrequencyData(freqData);
-      let bSum = 0, mSum = 0;
-      for (let i = 0; i < 8; i++) bSum += freqData[i];
-      for (let i = 8; i < 24; i++) mSum += freqData[i];
-      bass = bSum / (8 * 255); mid = mSum / (16 * 255);
+      analyser.getFloatTimeDomainData(timeData);
+      rms = rmsOf(timeData);
+    }
+    const voiceEnv = voice.update(rms, dt);
+
+    // The user's voice, while the mic is live.
+    const micLive = performance.now() - micAt < MIC_STALE_MS;
+    const heardNow = micLive ? unitRange(micRms, MIC_FLOOR, MIC_CEIL) : 0;
+    hear = follow(hear, heardNow, 0.03, 0.15, dt);
+
+    const drive = Math.max(state === "compacting" ? 0 : voiceEnv, hear * look.hear);
+    dust = follow(dust, Math.max(0, drive - 0.75) * 1.4, 0.03, 0.35, dt);
+
+    // Boot word: forms, holds, dissolves.
+    const bt = t - BOOT_START;
+    let form = 0;
+    if (bt > 0) {
+      if (bt < BOOT_FORM) form = bt / BOOT_FORM;
+      else if (bt < BOOT_FORM + BOOT_HOLD) form = 1;
+      else if (bt < BOOT_FORM + BOOT_HOLD + BOOT_FADE) form = 1 - (bt - BOOT_FORM - BOOT_HOLD) / BOOT_FADE;
     }
 
-    // Depth Z breathing
-    let zTarget = Math.sin(t * 0.12) * 8;
-    if (state === "thinking") zTarget = Math.sin(t * 0.3) * 15 + Math.sin(t * 0.9) * 6;
-    else if (state === "speaking") zTarget = Math.sin(t * 0.15) * 6 - bass * 10;
-    else if (state === "compacting") zTarget = -20 + Math.sin(t * 0.08) * 3;   // withdrawn, barely moving
-    cloudZVel += (zTarget - cloudZ) * 0.008;
-    cloudZVel *= 0.94;
-    cloudZ += cloudZVel;
+    spin += dt * spinRate * (1 + drive * 1.5);
+    headA += dt * 2.1;
+    headB -= dt * 1.5;
 
-    points.rotation.x = spinX; points.rotation.y = spinY; points.rotation.z = spinZ;
-    points.position.z = cloudZ;
-    lines.rotation.x = spinX; lines.rotation.y = spinY; lines.rotation.z = spinZ;
-    lines.position.z = cloudZ;
+    const g = glow * (1 + 0.45 * drive + 0.35 * pulse);
+    ringU.uTime.value = t;
+    ringU.uAmp.value = base + AMP * drive;
+    ringU.uWide.value = drive;
+    ringU.uScale.value = scale;
+    ringU.uGlow.value = g;
+    ringU.uDust.value = dust;
 
-    // ── Update particles ──
-    const p = geo.getAttribute("position") as THREE.BufferAttribute;
-    const a = p.array as Float32Array;
+    coreU.uTime.value = t;
+    coreU.uSpin.value = spin;
+    coreU.uTilt.value = 0.35 * Math.sin(t * 0.21) + 0.12 * Math.sin(t * 0.53);
+    coreU.uCore.value = 0.3 * scale * (1 + 0.035 * drive);
+    coreU.uGlow.value = glow * (1 + 0.25 * drive + 0.3 * pulse);
+    coreU.uSparkle.value = drive * 2;
 
-    for (let i = 0; i < N; i++) {
-      const i3 = i * 3;
-      let x = a[i3], y = a[i3 + 1], z = a[i3 + 2];
-      const px = phase[i];
+    scallop.rotation.z = t * 0.03 * (1 + think * 4);
 
-      vel[i3] += Math.sin(t * 0.05 + px) * 0.001 * currentSpeed;
-      vel[i3 + 1] += Math.cos(t * 0.06 + px * 1.3) * 0.001 * currentSpeed;
-      vel[i3 + 2] += Math.sin(t * 0.055 + px * 0.7) * 0.001 * currentSpeed;
-      vel[i3] += Math.sin(t * 0.02 + px * 2.1 + y * 0.1) * 0.0008 * currentSpeed;
-      vel[i3 + 1] += Math.cos(t * 0.025 + px * 1.7 + z * 0.1) * 0.0008 * currentSpeed;
-      vel[i3 + 2] += Math.sin(t * 0.022 + px * 0.9 + x * 0.1) * 0.0008 * currentSpeed;
+    arcU.uThink.value = think;
+    arcU.uHeadA.value = headA;
+    arcU.uHeadB.value = headB;
+    arcU.uScale.value = scale;
+    arcU.uGlow.value = glow;
 
-      const dist = Math.sqrt(x * x + y * y + z * z) || 0.01;
-      const pull = Math.max(0, dist - currentRadius) * 0.002 + 0.0003;
-      vel[i3] -= (x / dist) * pull;
-      vel[i3 + 1] -= (y / dist) * pull;
-      vel[i3 + 2] -= (z / dist) * pull;
+    textU.uForm.value = form;
+    textU.uTime.value = t;
+    textU.uGlow.value = glow * 1.4;
 
-      if (bass > 0.05) {
-        vel[i3] += (x / dist) * bass * 0.02;
-        vel[i3 + 1] += (y / dist) * bass * 0.02;
-        vel[i3 + 2] += (z / dist) * bass * 0.02;
-      }
-      if (state === "speaking" && mid > 0.1) {
-        const pulse = Math.sin(t * 8 + px);
-        vel[i3] += (x / dist) * mid * 0.012 * pulse;
-        vel[i3 + 1] += (y / dist) * mid * 0.012 * pulse;
-      }
-
-      vel[i3] *= 0.992; vel[i3 + 1] *= 0.992; vel[i3 + 2] *= 0.992;
-      a[i3] += vel[i3]; a[i3 + 1] += vel[i3 + 1]; a[i3 + 2] += vel[i3 + 2];
-    }
-    p.needsUpdate = true;
-
-    // ── Update lines ──
-    if (lineAmount > 0.01) {
-      const lp = lineGeo.getAttribute("position") as THREE.BufferAttribute;
-      const la = lp.array as Float32Array;
-      let lineCount = 0;
-      const maxDist = lineDistance * (1 + bass * 0.5);
-      const maxDistSq = maxDist * maxDist;
-      const step = Math.max(1, Math.floor(N / 600));
-
-      for (let i = 0; i < N && lineCount < MAX_LINES; i += step) {
-        const i3 = i * 3;
-        const x1 = a[i3], y1 = a[i3 + 1], z1 = a[i3 + 2];
-        for (let j = i + step; j < N && lineCount < MAX_LINES; j += step) {
-          const j3 = j * 3;
-          const dx = a[j3] - x1, dy = a[j3 + 1] - y1, dz = a[j3 + 2] - z1;
-          if (dx * dx + dy * dy + dz * dz < maxDistSq) {
-            const idx = lineCount * 6;
-            la[idx] = x1; la[idx+1] = y1; la[idx+2] = z1;
-            la[idx+3] = a[j3]; la[idx+4] = a[j3+1]; la[idx+5] = a[j3+2];
-            lineCount++;
-          }
-        }
-      }
-      lineGeo.setDrawRange(0, lineCount * 2);
-      lp.needsUpdate = true;
-      lineMat.opacity = lineAmount * 0.12;
-
-      // Store connections for electron spawning
-      activeConnections = [];
-      for (let c = 0; c < Math.min(lineCount, 500); c++) {
-        const ci = c * 6;
-        activeConnections.push({
-          x1: la[ci], y1: la[ci+1], z1: la[ci+2],
-          x2: la[ci+3], y2: la[ci+4], z2: la[ci+5],
-        });
-      }
-    } else {
-      lineGeo.setDrawRange(0, 0);
-      activeConnections = [];
-    }
-
-    // ── Update electrons — only during thinking ──
-    // One fires off every ~1 second, max 3 alive, takes 2-4s to travel
-    if (activeConnections.length > 0 && electronSpawnRate > 0.005) {
-      if (activeElectrons.length < 3 && (t - lastElectronSpawn) > 1.0) {
-        const conn = activeConnections[Math.floor(Math.random() * activeConnections.length)];
-        // speed: 1/fps * speed = progress per frame. At 60fps, speed 0.005 = 200 frames = 3.3s
-        activeElectrons.push({
-          sx: conn.x1, sy: conn.y1, sz: conn.z1,
-          ex: conn.x2, ey: conn.y2, ez: conn.z2,
-          t: 0,
-          speed: 0.003 + Math.random() * 0.003, // 2-4 seconds to travel
-        });
-        lastElectronSpawn = t;
-      }
-    }
-
-    // Update electron positions
-    const ep = electronGeo.getAttribute("position") as THREE.BufferAttribute;
-    const ea = ep.array as Float32Array;
-    let aliveCount = 0;
-
-    for (let e = activeElectrons.length - 1; e >= 0; e--) {
-      const el = activeElectrons[e];
-      el.t += el.speed;
-      if (el.t >= 1) {
-        activeElectrons.splice(e, 1);
-        continue;
-      }
-      const ei = aliveCount * 3;
-      ea[ei] = el.sx + (el.ex - el.sx) * el.t;
-      ea[ei + 1] = el.sy + (el.ey - el.sy) * el.t;
-      ea[ei + 2] = el.sz + (el.ez - el.sz) * el.t;
-      aliveCount++;
-    }
-
-    electronGeo.setDrawRange(0, aliveCount);
-    ep.needsUpdate = true;
-
-    // Electrons follow the same rotation/position as the main group
-    electrons.rotation.x = spinX; electrons.rotation.y = spinY; electrons.rotation.z = spinZ;
-    electrons.position.z = cloudZ;
-
-    mat.opacity = currentBright + bass * 0.08;
-    mat.size = currentSize + bass * 0.05;
-
-    if (state === "thinking") { mat.color.lerp(new THREE.Color(0x6ec4ff), 0.015); lineMat.color.lerp(new THREE.Color(0x6ec4ff), 0.015); }
-    else if (state === "speaking") { mat.color.lerp(new THREE.Color(0x5ab8f0), 0.015); lineMat.color.lerp(new THREE.Color(0x5ab8f0), 0.015); }
-    else if (state === "compacting") { mat.color.lerp(new THREE.Color(0x3a5f8a), 0.03); lineMat.color.lerp(new THREE.Color(0x3a5f8a), 0.03); }   // desaturated, cooler
-    else { mat.color.lerp(new THREE.Color(0x4ca8e8), 0.015); lineMat.color.lerp(new THREE.Color(0x4ca8e8), 0.015); }
-
-    camera.position.x = Math.sin(t * 0.02) * 5;
-    camera.position.y = Math.cos(t * 0.03) * 3;
-    camera.lookAt(0, 0, cloudZ * 0.2);
+    bgU.uGlow.value = 0.55 + 0.45 * glow + 0.1 * drive;
 
     renderer.render(scene, camera);
   }
-
-  function onResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  }
-
-  window.addEventListener("resize", onResize);
-  animate();
+  requestAnimationFrame(frame);
 
   return {
     setState(s: OrbState) { state = s; },
     setAnalyser(a: AnalyserNode | null) {
       analyser = a;
-      if (a) freqData = new Uint8Array(a.frequencyBinCount);
+      if (a) {
+        // A longer window than the player's default gives a steadier loudness reading.
+        a.fftSize = 1024;
+        timeData = new Float32Array(a.fftSize);
+      }
+      voice.reset();
+    },
+    setMicLevel(rms: number) {
+      micRms = rms;
+      micAt = performance.now();
     },
     destroy() {
       destroyed = true;
-      window.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", layout);
+      for (const o of [rings, scallop, core, arcs, text, bg]) {
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
       renderer.dispose();
     },
   };

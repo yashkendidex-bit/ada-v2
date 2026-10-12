@@ -15,14 +15,15 @@ export function createVoiceInput(
   onTranscript: (text: string) => void,
   onInterim: (text: string) => void,
   onError: (msg: string) => void,
-  onMicEvent: (event: string) => void = () => {}
+  onMicEvent: (event: string) => void = () => {},
+  onLevel: (rms: number) => void = () => {}
 ): VoiceInput {
   // What the screen asked for. The microphone runs only when this is true and
   // the face lock is not holding it shut.
   let wanted = false;
 
   const mic: Mic = createMic({
-    onLevel: () => {},               // the level meter is createMicMonitor's job
+    onLevel: (rms) => onLevel(rms),  // every frame while the mic is live; the orb listens with it
     onInterim: (text) => onInterim(text),
     onBargeIn: () => requestBargeIn(),
     onUtterance: (text) => onTranscript(text),

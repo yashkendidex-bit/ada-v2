@@ -28,6 +28,8 @@ function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: true,
+            // Keep the orb animating at full rate whenever the window is visible.
+            backgroundThrottling: false,
         },
         backgroundColor: '#000000',
         frame: false, // Frameless for custom UI
@@ -53,7 +55,9 @@ function createWindow() {
                 console.log('Frontend loaded successfully!');
                 windowWasShown = true;
                 mainWindow.show();
-                if (isDev) {
+                // DevTools slow the renderer down, so open them only on request:
+                // ADA_DEVTOOLS=1 npm run dev
+                if (isDev && process.env.ADA_DEVTOOLS === '1') {
                     mainWindow.webContents.openDevTools();
                 }
             })
