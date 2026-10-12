@@ -22,7 +22,7 @@ scheduler, an autonomy ladder, and a 3D assembly engine that designs parts from 
 | **🗣️ Low-Latency Voice** | Streaming conversation with word-level barge-in | Groq Whisper (STT) → Mistral Voxtral (TTS) |
 | **🧊 Assembly CAD** | Multi-part designs from a sentence, with real mates | `cad_v3` engine on build123d / OCCT |
 | **🖨️ 3D Printing** | Slicing and wireless print job submission | OrcaSlicer + Moonraker/OctoPrint |
-| **🔮 JARVIS Screen** | The JARVIS interface, copied: particle orb, voice-first controls | TypeScript + three.js (non-commercial licence, see NOTICE.md) |
+| **🔮 JARVIS Screen** | JARVIS-style screen with a voice-reactive teal orb (60 fps, GPU particles), voice-first controls | TypeScript + three.js (non-commercial licence, see NOTICE.md) |
 | **👁️ Face Authentication** | Secure local biometric login | MediaPipe Face Landmarker |
 | **🌐 Web Agent** | Autonomous browser automation | Playwright + Chromium |
 | **🧠 Persistent Memory** | Facts, episodes and an entity graph across sessions | SQLite kernel + embeddings |
@@ -390,8 +390,9 @@ ada_v2/
 ├── index.html                  # The JARVIS screen (title and label read A.D.A)
 ├── src/                        # Frontend: TypeScript + Vite + three.js
 │   ├── main.ts                 # JARVIS screen wiring (from JARVIS, three small edits)
-│   ├── orb.ts                  # The orb (from JARVIS, modified: hears the mic, breathes, pulses)
-│   ├── orb-motion.ts           # Timing helpers for the orb (frame-rate independent)
+│   ├── orb.ts                  # The orb: GPU point-sprite renderer modelled on the reference video; reacts to her voice and your mic
+│   ├── orb-motion.ts           # Timing and voice-envelope helpers (frame-rate independent)
+│   ├── orb-theme.css           # Teal colours for the controls around the orb
 │   ├── style.css               # Layout and palette (from JARVIS, verbatim)
 │   ├── voice.ts                # Audio queue and mic meter (from JARVIS, verbatim)
 │   ├── ws.ts                   # Transport: JARVIS's socket API over A.D.A's Socket.IO
@@ -499,7 +500,7 @@ Contributions are welcome! Here's how:
 
 This project is licensed under the **MIT License**, see the [LICENSE](LICENSE) file.
 
-**Exception:** the files taken from JARVIS (`index.html`, `src/orb.ts`, `src/style.css`, `src/voice.ts`, `src/main.ts`, `src/ws.ts`) are covered by the JARVIS licence, which allows personal and non-commercial use only. See [NOTICE.md](NOTICE.md) before any commercial use.
+**Exception:** the files taken from JARVIS (`index.html`, `src/style.css`, `src/voice.ts`, `src/main.ts`, `src/ws.ts`) are covered by the JARVIS licence, which allows personal and non-commercial use only. See [NOTICE.md](NOTICE.md) before any commercial use.
 
 ---
 

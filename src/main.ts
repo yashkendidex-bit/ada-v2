@@ -10,6 +10,7 @@ import { createAudioPlayer, createMicMonitor } from "./voice";
 import { createVoiceInput } from "./ada-voice";
 import { createSocket } from "./ws";
 import "./style.css";
+import "./orb-theme.css";
 
 // ---------------------------------------------------------------------------
 // State machine
