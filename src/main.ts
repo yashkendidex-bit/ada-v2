@@ -283,3 +283,30 @@ btnSettings.addEventListener("click", (e) => {
   menuDropdown.style.display = "none";
   statusEl.textContent = "settings are not available in this build";
 });
+
+// ---------------------------------------------------------------------------
+// Frame counter. Press F3 (or open with ?fps) to see the real frame rate of the
+// orb on this machine.
+// ---------------------------------------------------------------------------
+
+const fpsEl = document.createElement("div");
+fpsEl.id = "fps-counter";
+fpsEl.hidden = !/[?&]fps\b/.test(window.location.search);
+document.body.appendChild(fpsEl);
+window.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.key === "F3") { e.preventDefault(); fpsEl.hidden = !fpsEl.hidden; }
+});
+{
+  let frames = 0;
+  let since = performance.now();
+  const tick = (now: number) => {
+    frames++;
+    if (now - since >= 500) {
+      if (!fpsEl.hidden) fpsEl.textContent = `${Math.round((frames * 1000) / (now - since))} fps`;
+      frames = 0;
+      since = now;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}

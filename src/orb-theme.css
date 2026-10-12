@@ -61,3 +61,16 @@ html, body {
   color: #eafffd;
   border-color: rgba(79, 216, 207, 0.8);
 }
+
+#fps-counter {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: rgba(70, 190, 184, 0.6);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  z-index: 50;
+}
+#fps-counter[hidden] { display: none; }
