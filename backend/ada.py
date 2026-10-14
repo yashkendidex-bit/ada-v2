@@ -317,10 +317,92 @@ hud_demo_tool = {
     "parameters": {"type": "OBJECT", "properties": {}, "required": []},
 }
 
+show_widget_tool = {
+    "name": "show_widget",
+    "description": ("Put a widget on Sir's screen, inside or around the orb: clock, timer, gauge, progress, power, "
+                    "tile, list, table, chart, text, weather, notification, status, steps, connect, radar, "
+                    "waveform, model3d, image, hud. Use whenever a visual answers better than words. "
+                    "Returns the widget id; use update_widget to keep it live and close_widget when done."),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "kind": {"type": "STRING", "description": "Widget kind (see the WIDGETS list)"},
+            "props": {"type": "STRING", "description": "JSON object of the widget's props"},
+            "slot": {"type": "STRING", "description": "inner | n ne e se s sw w nw (omit to auto-place)"},
+            "color": {"type": "STRING", "description": "teal (default) cyan blue amber red green violet white, or #rrggbb"},
+            "id": {"type": "STRING", "description": "Optional id, to replace or update the same widget later"},
+            "title": {"type": "STRING", "description": "Optional title"},
+            "ttl": {"type": "INTEGER", "description": "Seconds until it closes by itself (0 = stays)"},
+        },
+        "required": ["kind"]
+    },
+}
+
+update_widget_tool = {
+    "name": "update_widget",
+    "description": "Change a widget that is already on screen (new numbers, new rows). Props are merged in; the widget animates to them.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "id": {"type": "STRING", "description": "Widget id from show_widget"},
+            "props": {"type": "STRING", "description": "JSON object of the props to change"},
+        },
+        "required": ["id", "props"]
+    },
+}
+
+close_widget_tool = {
+    "name": "close_widget",
+    "description": "Close a widget, or every widget with id 'all'.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {"id": {"type": "STRING", "description": "Widget id, or 'all'"}},
+        "required": ["id"]
+    },
+}
+
+build_scene_tool = {
+    "name": "build_scene",
+    "description": ("Compose a custom animated visual from drawing primitives when no preset widget fits: "
+                    "ring, arc, line, polyline, rect, circle, text, counter, grid, particles, bars, ticks, polygon, pulse. "
+                    "Coordinates are 0-100 of the scene. Animate with spin, pulse, sweep. Data only, never code."),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "title": {"type": "STRING", "description": "Scene title"},
+            "elements": {"type": "STRING", "description": "JSON list of shapes, e.g. [{\"shape\":\"ring\",\"x\":50,\"y\":50,\"r\":40,\"spin\":0.2}]"},
+            "slot": {"type": "STRING", "description": "inner | n ne e se s sw w nw"},
+            "color": {"type": "STRING", "description": "Palette name or #rrggbb"},
+            "id": {"type": "STRING", "description": "Optional id"},
+            "ttl": {"type": "INTEGER", "description": "Seconds until it closes (0 = stays)"},
+        },
+        "required": ["elements"]
+    },
+}
+
+build_widget_code_tool = {
+    "name": "build_widget_code",
+    "description": ("LAST RESORT for a visual that neither show_widget nor build_scene can make: a small HTML + canvas "
+                    "program shown in a sandbox (no network, no libraries, no storage, killed if it stalls). "
+                    "Keep it under 48 KB, self-contained, requestAnimationFrame for motion. Colours: CSS vars --c, --c2, --cd."),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "title": {"type": "STRING", "description": "Title"},
+            "html": {"type": "STRING", "description": "A complete self-contained HTML fragment with inline <style> and <script>"},
+            "slot": {"type": "STRING", "description": "inner | n ne e se s sw w nw"},
+            "id": {"type": "STRING", "description": "Optional id"},
+            "ttl": {"type": "INTEGER", "description": "Seconds until it closes (0 = stays)"},
+        },
+        "required": ["html"]
+    },
+}
+
 # tools_list[0]['function_declarations'][1:] == [write_file, read_directory, read_file]
 function_declarations = [
     generate_cad, run_web_agent, create_project_tool, switch_project_tool, list_projects_tool,
     iterate_cad_tool, search_web_tool, design_from_photo_tool, show_hud_tool, hud_demo_tool,
+    show_widget_tool, update_widget_tool, close_widget_tool, build_scene_tool, build_widget_code_tool,
     desktop_autopilot,
     list_parts_tool, edit_part_tool, undo_edit_tool,
     save_version_tool, list_versions_tool, compare_versions_tool,
@@ -582,7 +664,7 @@ SYSTEM_INSTRUCTION = (
     "- 'how are my prints / weekly review' -> scorecard. 'what do you believe about X' -> audit_beliefs. 'forget X completely' -> forget_complete. 'what's quarantined' -> quarantine_review.\n"
     "- 'watch me do X' / 'done showing' -> watch_me; 'how do I do X' (taught) -> show_procedure. 'deeper check-ins on/off' -> deeper_checkins; 'how am I doing' -> how_am_i (opt-in only, never ambient).\n"
     "- 'today's stats / what did it cost' -> cost_ledger. ETAs ride every ack — state time upfront, never 'working on it'.\n"
-    "- 'show me X live / put it on screen / dashboard' -> show_hud (compose any widgets from the catalog). 'show me what HUD can do' -> hud_demo.\n"
+    "- 'show me X / put it on screen / the time / a timer / a chart / a gauge / status' -> show_widget (inside or around the orb; update_widget keeps it live, close_widget clears it). A dashboard of many parts -> show_hud. 'show me what HUD can do' -> hud_demo. A visual no preset covers -> build_scene, and only as a last resort build_widget_code.\n"
     "- 'remove / delete / make red / bigger / hide / show this / undo / save version' -> list_parts (if unsure) then edit_part / undo_edit / save_version. 'THIS/THAT' = user's clicked selection, pass target='this'. Edits are INSTANT — never regenerate.\n"
     "- 'render / picture / show me good' -> render_scene ONLY then. 'does it collide / will it turn / test' -> test_model.\n"
     "- 'open X and do Y on screen' -> desktop_autopilot with clear goal.\n"
@@ -1318,6 +1400,7 @@ class AudioLoop:
         "remember", "recall", "recall_episodes", "notebook_read",
         "search_web", "run_web_agent", "generate_cad", "iterate_cad",
         "create_reminder", "system_info", "read_file", "calendar_event",
+        "show_widget", "close_widget",
     })
     _tools_cache = {}  # (has_model, lean) -> converted list
 
@@ -2099,14 +2182,17 @@ class AudioLoop:
             t = (getattr(self, "_turn_text", "") or "").lower()
             if any(w in t for w in ("show", "display", "hud", "dashboard",
                                     "gauge", "progress", "status", "temp",
-                                    "screen", "visual", "demo")):
+                                    "screen", "visual", "demo", "widget", "clock",
+                                    "time", "timer", "chart", "graph", "weather",
+                                    "list", "table", "countdown")):
                 from hud_spec import catalog_prompt
+                from widgets import catalog_prompt as _wcat
+                ctx.append(_wcat())
                 ctx.append("HUD — COMPOSE ANY DASHBOARD:\n" + catalog_prompt()
                            + "\nUse show_hud with {title, nodes, root}. hud_demo proves the pipeline.")
             else:
-                ctx.append("HUD: a live widget panel exists (show_hud with catalog "
-                           "widgets; hud_demo showcases). Offer visuals for live "
-                           "status, never for chit-chat.")
+                ctx.append("WIDGETS: show_widget puts a clock, gauge, chart, list ... inside or around the "
+                           "orb. Offer visuals for live status, never for chit-chat.")
         except Exception:
             pass
         # World model: routines + project pace ride every turn (small, sync).
@@ -3183,6 +3269,33 @@ class AudioLoop:
             return {"result": ("Showcase HUD streaming to the panel now — gauge, ring, "
                                "spec card, timeline, log, then live value ticks. "
                                "You already said 'Putting it on screen'. Say nothing more.")}
+
+        if name in ("show_widget", "build_scene", "build_widget_code", "update_widget", "close_widget"):
+            import widgets as _w
+            if self.on_hud_data is None:
+                return {"result": "No screen connected — speak it instead."}
+            if name == "show_widget":
+                msg, why = _w.build_open(args.get("kind"), args.get("props"), args.get("slot"),
+                                         args.get("color"), args.get("id"), args.get("title"), args.get("ttl"))
+            elif name == "build_scene":
+                msg, why = _w.build_scene(args.get("title"), args.get("elements"), args.get("slot"),
+                                          args.get("color"), None, None, args.get("id"), args.get("ttl"))
+            elif name == "build_widget_code":
+                msg, why = _w.build_code(args.get("title"), args.get("html"), args.get("slot"),
+                                         args.get("id"), args.get("ttl"), None)
+            elif name == "update_widget":
+                msg, why = _w.build_update(args.get("id"), args.get("props"))
+            else:
+                msg, why = _w.build_close(args.get("id")), ""
+            if msg is None:
+                return {"result": f"Widget refused: {why}. Fix the call or say it out loud instead."}
+            await self._hud_emit("widget", msg)
+            if name == "close_widget":
+                return {"result": "Cleared. Say nothing more about it."}
+            if name == "update_widget":
+                return {"result": f"Widget {msg['id']} updated."}
+            return {"result": (f"Widget '{msg['id']}' ({msg['kind']}) is on screen, Sir. "
+                               "Narrate the headline, not the pixels.")}
 
         if name == "show_hud":
             import json as _jl

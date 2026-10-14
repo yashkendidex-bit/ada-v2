@@ -35,6 +35,19 @@ export interface Orb {
   setAnalyser(a: AnalyserNode | null): void;
   /** Microphone RMS, called every frame while the mic is live. Silence stops it counting. */
   setMicLevel(rms: number): void;
+  /**
+   * What the screen is showing on top of the orb. `inner` (0..1) is how much of
+   * the orb's inside is covered by a widget: the core dims behind it. `busy`
+   * (0..1) is how hard she is working: the ring churns, as in the reference
+   * while a task runs.
+   */
+  setFocus(focus: { inner?: number; busy?: number }): void;
+  /** Where the orb is on screen, in CSS pixels. `r` is the outer ring's radius. */
+  getLayout(): { cx: number; cy: number; r: number };
+  /** Called whenever the layout changes (window resize). */
+  onLayout(fn: () => void): void;
+  /** Particle budget, 1 = full. The orb lowers it by itself when frames run long. */
+  getQuality(): number;
   destroy(): void;
 }
 
@@ -61,8 +74,8 @@ const AMP = 0.2;
  * are dense, so many sprites overlap and build up the soft band.
  */
 const BAND = {
-  a: { radius: 1.0, strands: 24, spacing: 0.0038, jitter: 0.0015, size: 3.4, alpha: 0.019 },
-  b: { radius: 0.925, strands: 5, spacing: 0.011, jitter: 0.003, size: 2.6, alpha: 0.055 },
+  a: { radius: 1.0, strands: 24, spacing: 0.0038, jitter: 0.0042, size: 3.4, alpha: 0.019 },
+  b: { radius: 0.925, strands: 5, spacing: 0.011, jitter: 0.006, size: 2.6, alpha: 0.055 },
   thin: { radius: 0.862, strands: 1, spacing: 0, jitter: 0.008, size: 3.2, alpha: 0.075 },
 };
 
@@ -95,7 +108,7 @@ float facet(float th, float cells, float tt, float seed) {
 
 const RING_VERT = /* glsl */ `
 precision highp float;
-uniform float uTime, uAmp, uWide, uScale, uPx, uGlow, uDust;
+uniform float uTime, uAmp, uWide, uScale, uPx, uGlow, uDust, uQ;
 attribute vec4 aP;   // strand, weight, size, alpha
 attribute vec2 aR;   // random, kind (0 plain, 1 ticked, 2 dust)
 varying float vA;
@@ -128,7 +141,7 @@ void main() {
 
   float tick = (kind > 0.5 && kind < 1.5) ? 0.9 + 0.1 * step(0.5, fract(th * 23.873)) : 1.0;
   float twinkle = 0.85 + 0.15 * sin(uTime * (1.5 + rnd * 3.0) + rnd * 40.0);
-  float a = alpha * uGlow * tick * twinkle;
+  float a = alpha * uGlow * uQ * tick * twinkle;
   vA = kind > 1.5 ? a * uDust * 2.0 : a;
 }
 `;
@@ -315,17 +328,23 @@ function addRing(
   b: Buf, count: number, radius: number, spacing: number, jitter: number,
   size: number, alpha: number, weight: number, strands: number, kind: number,
 ): void {
-  for (let i = 0; i < count; i++) {
-    const th = rnd() * Math.PI * 2;
-    const strand = Math.floor(rnd() * strands);
+  // Each strand spreads its points evenly around the ring with a small random
+  // nudge, instead of dropping them anywhere. Random placement leaves clumps and
+  // gaps that read as grain; this reads as a continuous band.
+  const per = Math.max(1, Math.round(count / strands));
+  for (let strand = 0; strand < strands; strand++) {
+    const phase = (strand * 0.6180339887) % 1;
     // Each strand is a thin sheet at its own radial offset. Calm, they stack into
     // one soft band; driven, they part and fold independently.
-    const off = (strand - (strands - 1) / 2) * spacing + (rnd() * 2 - 1) * jitter;
-    b.pos.push(th, radius, off);
+    const base = (strand - (strands - 1) / 2) * spacing;
     // The outer sheets of the band read brighter than the inner ones.
     const edge = kind === 1 && strands > 1 ? 0.55 + 0.9 * (strand / (strands - 1)) : 1;
-    b.p.push(strand, weight, size * (0.8 + 0.5 * rnd()), alpha * edge);
-    b.r.push(rnd(), kind);
+    for (let j = 0; j < per; j++) {
+      const th = (((j + rnd()) / per + phase) % 1) * Math.PI * 2;
+      b.pos.push(th, radius, base + (rnd() * 2 - 1) * jitter);
+      b.p.push(strand, weight, size * (0.8 + 0.5 * rnd()), alpha * edge);
+      b.r.push(rnd(), kind);
+    }
   }
 }
 
@@ -337,51 +356,48 @@ function ringGeometry(b: Buf, attrs: { p: string; r?: string }): THREE.BufferGeo
   return g;
 }
 
-/** Honeycomb on a sphere: the dual of a subdivided icosahedron. Hexagons everywhere but twelve pentagons. */
+/** A geodesic sphere: the triangle mesh of a subdivided icosahedron, as dots along every edge and a brighter dot at every corner. */
 function buildCore(): THREE.BufferGeometry {
-  const ico = new THREE.IcosahedronGeometry(1, 7); // already non-indexed: three faces' worth of vertices each
+  const ico = new THREE.IcosahedronGeometry(1, 5); // non-indexed: three vertices per face
   const src = ico.getAttribute("position") as THREE.BufferAttribute;
   const faces = src.count / 3;
   const key = (i: number) =>
     `${Math.round(src.getX(i) * 1e4)},${Math.round(src.getY(i) * 1e4)},${Math.round(src.getZ(i) * 1e4)}`;
   const vid = new Map<string, number>();
+  const verts: THREE.Vector3[] = [];
   const id = (i: number) => {
     const k = key(i);
     let v = vid.get(k);
-    if (v === undefined) { v = vid.size; vid.set(k, v); }
+    if (v === undefined) {
+      v = verts.length;
+      vid.set(k, v);
+      verts.push(new THREE.Vector3(src.getX(i), src.getY(i), src.getZ(i)).normalize());
+    }
     return v;
   };
-
-  const centre: THREE.Vector3[] = [];
-  const edgeFaces = new Map<string, number[]>();
+  const edges = new Set<string>();
   for (let f = 0; f < faces; f++) {
     const v = [id(f * 3), id(f * 3 + 1), id(f * 3 + 2)];
-    const c = new THREE.Vector3();
-    for (let k = 0; k < 3; k++) c.add(new THREE.Vector3(src.getX(f * 3 + k), src.getY(f * 3 + k), src.getZ(f * 3 + k)));
-    centre.push(c.normalize());
     for (let k = 0; k < 3; k++) {
       const a = v[k], bb = v[(k + 1) % 3];
-      const e = a < bb ? `${a}_${bb}` : `${bb}_${a}`;
-      const list = edgeFaces.get(e);
-      if (list) list.push(f); else edgeFaces.set(e, [f]);
+      edges.add(a < bb ? `${a}_${bb}` : `${bb}_${a}`);
     }
   }
 
   const pos: number[] = [];
   const p: number[] = [];
-  const dotsPerEdge = 5;
-  for (const list of edgeFaces.values()) {
-    if (list.length !== 2) continue;
-    const a = centre[list[0]], c = centre[list[1]];
-    for (let s = 0; s < dotsPerEdge; s++) {
-      const q = a.clone().lerp(c, (s + 0.5) / dotsPerEdge).normalize();
+  const dotsPerEdge = 7;
+  for (const e of edges) {
+    const [ia, ib] = e.split("_").map(Number);
+    for (let s = 1; s < dotsPerEdge; s++) {
+      const q = verts[ia].clone().lerp(verts[ib], s / dotsPerEdge).normalize();
       pos.push(q.x, q.y, q.z);
-      p.push(1.2, 0.2, 0, 0);
+      p.push(1.1, 0.2, 0, 0);
     }
   }
-  for (const c of centre) {
-    pos.push(c.x, c.y, c.z);
-    p.push(1.8, 0.3, 1, 0);
+  for (const v of verts) {
+    pos.push(v.x, v.y, v.z);
+    p.push(1.7, 0.3, 1, 0);
   }
   // A few white sparkles that come and go.
   for (let i = 0; i < 14; i++) {
@@ -485,14 +501,18 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   // ── Rings ──
   const ringU = {
     uTime: { value: 0 }, uAmp: { value: 0 }, uWide: { value: 0 }, uScale: { value: 1 },
-    uPx: { value: 1 }, uGlow: { value: 1 }, uDust: { value: 0 }, uColor: { value: COLOR },
+    uPx: { value: 1 }, uGlow: { value: 1 }, uDust: { value: 0 }, uQ: { value: 1 }, uColor: { value: COLOR },
   };
+  // The big outer band has its own alpha scale, so its particle count can drop on a slow machine.
+  const bandU = { ...ringU, uQ: { value: 1 } };
   const additive = { transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending } as const;
   const ringMat = new THREE.ShaderMaterial({ vertexShader: RING_VERT, fragmentShader: SOFT_FRAG, uniforms: ringU, ...additive });
+  const bandMat = new THREE.ShaderMaterial({ vertexShader: RING_VERT, fragmentShader: SOFT_FRAG, uniforms: bandU, ...additive });
 
+  const ba = new Buf();
   const rb = new Buf();
   // Soft, wide sprites at low alpha: the reference is a continuous teal strip, not a dotted line.
-  addRing(rb, 70000, BAND.a.radius, BAND.a.spacing, BAND.a.jitter, BAND.a.size, BAND.a.alpha, 1.0, BAND.a.strands, 1); // outer band, twenty-four sheets
+  addRing(ba, 70000, BAND.a.radius, BAND.a.spacing, BAND.a.jitter, BAND.a.size, BAND.a.alpha, 1.0, BAND.a.strands, 1); // outer band, twenty-four sheets
   addRing(rb, 12000, BAND.b.radius, BAND.b.spacing, BAND.b.jitter, BAND.b.size, BAND.b.alpha, 0.85, BAND.b.strands, 0); // second ring
   addRing(rb, 5000, BAND.thin.radius, BAND.thin.spacing, BAND.thin.jitter, BAND.thin.size, BAND.thin.alpha, 0.35, 1, 0); // thin solid ring
   addRing(rb, 2500, 0.64, 0, 0.004, 2.2, 0.003, 0.05, 1, 0);                                // faint ring
@@ -502,6 +522,10 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     rb.p.push(0, 1.0, 2.4, 0.1);
     rb.r.push(rnd(), 0);
   }
+  const band = new THREE.Points(ringGeometry(ba, { p: "aP", r: "aR" }), bandMat);
+  band.frustumCulled = false;
+  group.add(band);
+  const bandCount = ba.count;
   const rings = new THREE.Points(ringGeometry(rb, { p: "aP", r: "aR" }), ringMat);
   rings.frustumCulled = false;
   group.add(rings);
@@ -569,6 +593,8 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   group.add(text);
 
   // ── Layout ──
+  const where = { cx: 0, cy: 0, r: 1 };
+  const layoutListeners: Array<() => void> = [];
   function layout(): void {
     const W = window.innerWidth, H = window.innerHeight;
     const pr = renderer.getPixelRatio();
@@ -585,6 +611,8 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     bgU.uCenter.value.set(W / 2, CENTER_Y * H);
     bgU.uRadius.value = radius;
     bgU.uPixelRatio.value = pr;
+    where.cx = W / 2; where.cy = CENTER_Y * H; where.r = radius;
+    for (const fn of layoutListeners) fn();
   }
   layout();
   window.addEventListener("resize", layout);
@@ -603,9 +631,20 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   let timeData = new Float32Array(1024);
   const voice = new VoiceEnvelope();
   let headA = 0, headB = 0;
+  let focusInner = 0, focusInnerTo = 0, busy = 0, busyTo = 0;
+  let quality = 1, slowFor = 0, fastFor = 0, cooldown = 0, ema = 1 / 60;
   let last = -1;
   let t = 0;
   const BOOT_START = 0.4, BOOT_FORM = 1.8, BOOT_HOLD = 2.4, BOOT_FADE = 1.4;
+
+  function setQuality(q: number): void {
+    quality = q;
+    band.geometry.setDrawRange(0, Math.floor(bandCount * q));
+    // Fewer particles, each a little brighter, so the band keeps its weight.
+    bandU.uQ.value = 1 / Math.pow(q, 0.8);
+    renderer.setPixelRatio(q < 0.5 ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    layout();
+  }
 
   function frame(ts: number): void {
     if (destroyed) return;
@@ -616,6 +655,17 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     const dt = Math.min((ts - last) / 1000, 0.05);
     last = ts;
     t += dt;
+
+    // Frame governor: if frames keep running long, draw fewer band particles.
+    ema += (dt - ema) * 0.05;
+    cooldown = Math.max(0, cooldown - dt);
+    if (t > 3) {
+      if (ema > 0.024) { slowFor += dt; fastFor = 0; } else if (ema < 0.0185) { fastFor += dt; slowFor = 0; } else { slowFor = 0; fastFor = 0; }
+      if (cooldown === 0 && slowFor > 2 && quality > 0.4) { setQuality(quality === 1 ? 0.7 : quality > 0.6 ? 0.5 : 0.4); slowFor = 0; cooldown = 6; }
+      else if (cooldown === 0 && fastFor > 10 && quality < 1) { setQuality(quality < 0.6 ? 0.7 : 1); fastFor = 0; cooldown = 12; }
+    }
+    focusInner = easeTo(focusInner, focusInnerTo, 4, dt);
+    busy = easeTo(busy, busyTo, 2.5, dt);
 
     const look = LOOK[state];
     glow = easeTo(glow, look.glow, 3, dt);
@@ -644,7 +694,10 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     const heardNow = micLive ? unitRange(micRms, MIC_FLOOR, MIC_CEIL) : 0;
     hear = follow(hear, heardNow, 0.03, 0.15, dt);
 
-    const drive = Math.max(state === "compacting" ? 0 : voiceEnv, hear * look.hear);
+    // While a task runs the ring churns by itself, like the reference does
+    // behind its "connecting" widget: irregular, never still, never at full strength.
+    const churn = busy * (0.34 + 0.2 * Math.sin(t * 3.7) * Math.sin(t * 1.3 + 1.0) + 0.1 * Math.sin(t * 9.1));
+    const drive = Math.max(state === "compacting" ? 0 : voiceEnv, hear * look.hear, churn);
     dust = follow(dust, Math.max(0, drive - 0.75) * 1.4, 0.03, 0.35, dt);
 
     // Boot word: forms, holds, dissolves.
@@ -672,18 +725,19 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     coreU.uSpin.value = spin;
     coreU.uTilt.value = 0.35 * Math.sin(t * 0.21) + 0.12 * Math.sin(t * 0.53);
     coreU.uCore.value = 0.3 * scale * (1 + 0.035 * drive);
-    coreU.uGlow.value = glow * (1 + 0.25 * drive + 0.3 * pulse);
+    coreU.uGlow.value = glow * (1 + 0.25 * drive + 0.3 * pulse) * (1 - 0.6 * focusInner);
     coreU.uSparkle.value = drive * 2;
 
+    scallop.visible = focusInner < 0.9;
     scallop.rotation.z = t * 0.03 * (1 + think * 4);
 
     arcU.uThink.value = think;
     arcU.uHeadA.value = headA;
     arcU.uHeadB.value = headB;
     arcU.uScale.value = scale;
-    arcU.uGlow.value = glow;
+    arcU.uGlow.value = glow * (1 - 0.5 * focusInner);
 
-    textU.uForm.value = form;
+    textU.uForm.value = form * (1 - focusInner);
     textU.uTime.value = t;
     textU.uGlow.value = glow * 1.4;
 
@@ -708,10 +762,17 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
       micRms = rms;
       micAt = performance.now();
     },
+    setFocus(f) {
+      if (f.inner !== undefined) focusInnerTo = Math.max(0, Math.min(1, f.inner));
+      if (f.busy !== undefined) busyTo = Math.max(0, Math.min(1, f.busy));
+    },
+    getLayout() { return { cx: where.cx, cy: where.cy, r: where.r }; },
+    onLayout(fn: () => void) { layoutListeners.push(fn); },
+    getQuality() { return quality; },
     destroy() {
       destroyed = true;
       window.removeEventListener("resize", layout);
-      for (const o of [rings, scallop, core, arcs, text, bg]) {
+      for (const o of [band, rings, scallop, core, arcs, text, bg]) {
         o.geometry.dispose();
         (o.material as THREE.Material).dispose();
       }
