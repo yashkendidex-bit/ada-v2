@@ -393,6 +393,7 @@ ada_v2/
 │   ├── orb.ts                  # The orb: GPU point-sprite renderer modelled on the reference video; reacts to her voice and your mic
 │   ├── orb-motion.ts           # Timing and voice-envelope helpers (frame-rate independent)
 │   ├── orb-theme.css           # Teal colours for the controls around the orb
+│   ├── widgets/                # What she can put on screen, inside and around the orb (presets, scenes, 3D, HUD, sandbox)
 │   ├── style.css               # Layout and palette (from JARVIS, verbatim)
 │   ├── voice.ts                # Audio queue and mic meter (from JARVIS, verbatim)
 │   ├── ws.ts                   # Transport: JARVIS's socket API over A.D.A's Socket.IO
@@ -495,6 +496,18 @@ Contributions are welcome! Here's how:
 - **[Playwright](https://playwright.dev/)** — Reliable browser automation
 
 ---
+
+## 🧩 Widgets
+
+She can put visuals on screen inside and around the orb, like JARVIS in the film. Three tiers, safest first, all drawn by the screen (nothing she sends is run as code except inside the sandbox):
+
+| Tier | Tool | What it is |
+|---|---|---|
+| Presets | `show_widget`, `update_widget`, `close_widget` | clock, timer, gauge, progress, power, tile, list, table, chart, text, weather, notification, status, steps, connect, radar, waveform, model3d, image, hud |
+| Scenes | `build_scene` | A custom visual from drawing primitives (ring, arc, line, text, counter, grid, particles, bars, ticks, pulse) |
+| Free build | `build_widget_code` | A small HTML/canvas program in a sandboxed frame: no network, no storage, no access to the app, stopped if it stalls |
+
+Colour is the orb's teal by default; she can choose any palette name or `#rrggbb`. The dock at the bottom opens a clock, a timer, a showcase and clears the screen; Esc closes the newest widget.
 
 ## 📄 License
 

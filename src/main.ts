@@ -11,6 +11,9 @@ import { createVoiceInput } from "./ada-voice";
 import { createSocket } from "./ws";
 import "./style.css";
 import "./orb-theme.css";
+import "./widgets/widgets.css";
+import { WidgetManager } from "./widgets/manager";
+import { createDock } from "./widgets/dock";
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -48,6 +51,17 @@ function updateStatus(state: State) {
 
 const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
 const orb = createOrb(canvas);
+
+// Widgets: what she puts on screen, inside and around the orb.
+const widgetLayer = document.createElement("div");
+widgetLayer.id = "widget-layer";
+document.body.appendChild(widgetLayer);
+const widgets = new WidgetManager({
+  layer: widgetLayer,
+  orb,
+  onAction: (action: string) => socket.send({ type: "hud_action", action }),
+});
+createDock(widgets);
 
 const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
 const WS_URL = `${wsProto}//${window.location.host}/ws/voice`;
@@ -149,7 +163,11 @@ function hush() {
 
 hushBtn.addEventListener("click", hush);
 window.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.key === "Escape") { e.preventDefault(); hush(); }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (currentState === "speaking") hush();
+    else widgets.closeTop();
+  }
 });
 
 audioPlayer.onPlayed((utt, idx) => {
@@ -171,7 +189,9 @@ audioPlayer.onNeedsGesture(() => {
 socket.onMessage((msg) => {
   const type = msg.type as string;
 
-  if (type === "config") {
+  if (type === "widget" || type === "hud") {
+    widgets.handle(msg);
+  } else if (type === "config") {
     muteMicDuringSpeech = Boolean(msg.muteMicDuringSpeech);
   } else if (type === "audio") {
     const data = msg.data as string;

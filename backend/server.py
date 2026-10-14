@@ -491,7 +491,9 @@ async def start_audio(sid, data=None):
             print(f"Sending HUD event: {data.get('t')} {data.get('hudId', '')}")
         except Exception:
             pass
-        asyncio.create_task(sio.emit('hud', data))
+        # Widgets (inside/around the orb) have their own event; HUD specs keep theirs.
+        event = 'widget' if str(data.get('t', '')).startswith('widget:') else 'hud'
+        asyncio.create_task(sio.emit(event, data))
 
     @sio.event
     async def hud_action(sid, data):

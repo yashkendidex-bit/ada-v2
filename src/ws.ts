@@ -274,6 +274,9 @@ export function createSocket(_url: string): JarvisSocket {
   sock.on("transcription", onTranscription);
   sock.on("ada_question", onQuestion);
   sock.on("auth_status", onAuthStatus);
+  // Widgets and HUD dashboards go to the screen as they are; it validates them again.
+  sock.on("widget", (d: Record<string, unknown>) => toScreen({ type: "widget", ...d }));
+  sock.on("hud", (d: Record<string, unknown>) => toScreen({ type: "hud", ...d }));
 
   sock.on("error", (d: ErrorEvent) => {
     const msg = d?.msg ?? "";
@@ -318,6 +321,9 @@ export function createSocket(_url: string): JarvisSocket {
           break;
         case "hush":
           interrupt();
+          break;
+        case "hud_action":
+          if (connected) sock.emit("hud_action", { action: String(data.action ?? "") });
           break;
         default:
           // interim, mic and played carry nothing A.D.A needs.

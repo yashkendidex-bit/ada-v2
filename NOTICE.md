@@ -17,7 +17,7 @@ unchanged.
 
 The rest of the GUI is A.D.A's own code under the MIT licence in
 [`LICENSE`](LICENSE): `src/ada-voice.ts`, `src/ada-state.ts`, `src/mic.ts`,
-`src/env.d.ts`, `src/orb-motion.ts` (timing and voice-envelope helpers), `src/orb-theme.css` (teal control colours) and `src/orb.ts`.
+`src/env.d.ts`, `src/orb-motion.ts` (timing and voice-envelope helpers), `src/orb-theme.css` (teal control colours) and `src/orb.ts`, and everything in `src/widgets/` (the widget layer: manager, dock, dials, panels, scene renderer, 3D viewer, HUD renderer, sandbox).
 
 `src/orb.ts` is new A.D.A code, no longer the JARVIS orb. It is a GPU point-sprite renderer written from scratch and modelled on the look of a reference video (Marvel's Iron Man 3 second-screen JARVIS trailer), measured for ring radii, colour and how the ring distorts with the voice. No code, frames or other assets from that video or from JARVIS are in it. The JARVIS and Marvel names and the film's look belong to their owners; this is a personal, non-commercial homage, so keep it non-commercial.
 
