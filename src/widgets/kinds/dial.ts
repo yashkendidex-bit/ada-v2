@@ -48,6 +48,39 @@ function label(el: HTMLElement, cls: string, top: number, size: number, text = "
   return d;
 }
 
+// ── arc reactor frame ───────────────────────────────────────────────────
+// The look shared by clock, timer, gauge, progress and power: a segmented outer
+// ring that turns slowly, a fine tick scale, a counter-turning inner ring with
+// four pointers, and a dark core disc that holds the reading. The turning is
+// decoration only: it never encodes a value. Values are drawn by the arcs.
+
+const RX_ARC = 144;
+
+function reactor(svg: SVGElement): { spin(t: number): void } {
+  const outer = s("g", { class: "rx-outer" }, svg);
+  const C = 2 * Math.PI * 186, n = 16;
+  s("circle", {
+    cx: 200, cy: 200, r: 186, class: "rx-seg",
+    "stroke-dasharray": `${((C / n) * 0.84).toFixed(2)} ${((C / n) * 0.16).toFixed(2)}`,
+  }, outer);
+  s("circle", { cx: 200, cy: 200, r: 166, class: "ln-soft" }, svg);
+  ticks(svg, 158, 163, 60, "ticks", 5, 170);
+  const inner = s("g", { class: "rx-inner" }, svg);
+  s("circle", { cx: 200, cy: 200, r: 114, class: "ln-dash" }, inner);
+  for (let i = 0; i < 4; i++) {
+    const a = i * 90;
+    const [tx, ty] = polar(124, a), [bx, by] = polar(108, a - 5), [cx_, cy_] = polar(108, a + 5);
+    s("polygon", { points: `${tx.toFixed(1)},${ty.toFixed(1)} ${bx.toFixed(1)},${by.toFixed(1)} ${cx_.toFixed(1)},${cy_.toFixed(1)}`, class: "rx-ptr" }, inner);
+  }
+  s("circle", { cx: 200, cy: 200, r: 92, class: "rx-core" }, svg);
+  return {
+    spin(t: number) {
+      outer.setAttribute("transform", `rotate(${((t * 4) % 360).toFixed(2)} 200 200)`);
+      inner.setAttribute("transform", `rotate(${((-t * 9) % 360).toFixed(2)} 200 200)`);
+    },
+  };
+}
+
 // ── clock ───────────────────────────────────────────────────────────────
 
 function zoneFormatter(tz: string, hour12: boolean): { parts(d: Date): { h: string; m: string; s: string; ap: string; day: string } } {
@@ -76,46 +109,41 @@ function zoneFormatter(tz: string, hour12: boolean): { parts(d: Date): { h: stri
 
 function makeClock(props: Props, _env: WidgetEnv): WidgetInstance {
   const { el, svg } = shell();
-  s("circle", { cx: 200, cy: 200, r: 188, class: "ln-soft" }, svg);
-  s("circle", { cx: 200, cy: 200, r: 176, class: "ln" }, svg);
-  const spinA = s("g", { class: "spin-a" }, svg);
-  s("circle", { cx: 200, cy: 200, r: 166, class: "ln-dash" }, spinA);
-  ticks(svg, 150, 156, 60, "ticks", 5, 162);
-  const secArc = s("path", { class: "arc-bright" }, svg);
-  const scan = s("line", { x1: 40, x2: 360, y1: 200, y2: 200, class: "ln-scan" }, svg);
-  const timeEl = label(el, "wd-big", 150, 78);
-  const apEl = label(el, "wd-sm", 150, 20);
-  apEl.style.transform = "translate(88px, 8px)";
-  const secEl = label(el, "wd-sm", 188, 20);
-  secEl.style.transform = "translate(88px, 22px)";
-  const dayEl = label(el, "wd-cap", 262, 15);
-  const nameEl = label(el, "wd-cap dim", 286, 13);
+  const rx = reactor(svg);
+  s("path", { d: arcPath(RX_ARC, 0, 359.9), class: "rx-track" }, svg);
+  const secArc = s("path", { class: "rx-arc" }, svg);
+  const head = s("circle", { r: 6, class: "rx-head" }, svg);
+  const timeEl = label(el, "wd-big", 158, 56);
+  const metaEl = label(el, "wd-sm", 222, 14);
+  const dayEl = label(el, "wd-cap", 244, 12);
+  const nameEl = label(el, "wd-cap dim", 262, 11);
   let fmtr = zoneFormatter(str(props.tz), props.hour12 !== false);
   let showSeconds = props.seconds !== false;
   let lastSec = -1;
-  nameEl.textContent = str(props.label) || (str(props.tz).split("/").pop() ?? "").replace(/_/g, " ").toUpperCase();
+  const zoneName = (p: Props) => str(p.label) || (str(p.tz).split("/").pop() ?? "").replace(/_/g, " ").toUpperCase();
+  nameEl.textContent = zoneName(props);
   return {
     el,
     update(p) {
       fmtr = zoneFormatter(str(p.tz), p.hour12 !== false);
       showSeconds = p.seconds !== false;
-      nameEl.textContent = str(p.label) || (str(p.tz).split("/").pop() ?? "").replace(/_/g, " ").toUpperCase();
+      nameEl.textContent = zoneName(p);
       lastSec = -1;
     },
     tick(t) {
+      rx.spin(t);
       const now = new Date();
       const sec = now.getSeconds() + now.getMilliseconds() / 1000;
-      secArc.setAttribute("d", arcPath(176, 0, Math.max(0.5, (sec / 60) * 360)));
-      scan.setAttribute("y1", String(200 + Math.sin(t * 0.9) * 80));
-      scan.setAttribute("y2", String(200 + Math.sin(t * 0.9) * 80));
-      spinA.setAttribute("transform", `rotate(${(t * 6) % 360} 200 200)`);
+      const a = Math.max(0.5, (sec / 60) * 359.9);
+      secArc.setAttribute("d", arcPath(RX_ARC, 0, a));
+      const [x, y] = polar(RX_ARC, a);
+      head.setAttribute("cx", x.toFixed(2)); head.setAttribute("cy", y.toFixed(2));
       const whole = Math.floor(sec);
       if (whole === lastSec) return;
       lastSec = whole;
       const p = fmtr.parts(now);
       timeEl.textContent = `${p.h}:${p.m}`;
-      apEl.textContent = p.ap;
-      secEl.textContent = showSeconds ? p.s : "";
+      metaEl.textContent = [p.ap, showSeconds ? `${p.s}s` : ""].filter(Boolean).join(" · ");
       dayEl.textContent = p.day;
     },
     destroy() {},
@@ -126,13 +154,13 @@ function makeClock(props: Props, _env: WidgetEnv): WidgetInstance {
 
 function makeTimer(props: Props, env: WidgetEnv): WidgetInstance {
   const { el, svg } = shell();
-  s("circle", { cx: 200, cy: 200, r: 176, class: "ln-soft" }, svg);
-  s("path", { d: arcPath(176, 0, 359.9), class: "arc-dim" }, svg);
-  const arc = s("path", { class: "arc-bright" }, svg);
-  ticks(svg, 150, 156, 60, "ticks", 5, 162);
-  const timeEl = label(el, "wd-big", 148, 84);
-  const nameEl = label(el, "wd-cap", 262, 16);
-  const subEl = label(el, "wd-cap dim", 288, 13);
+  const rx = reactor(svg);
+  s("path", { d: arcPath(RX_ARC, 0, 359.9), class: "rx-track" }, svg);
+  const arc = s("path", { class: "rx-arc" }, svg);
+  const head = s("circle", { r: 6, class: "rx-head" }, svg);
+  const timeEl = label(el, "wd-big", 162, 52);
+  const nameEl = label(el, "wd-cap", 232, 13);
+  const subEl = label(el, "wd-cap dim", 254, 11);
   let total = num(props.seconds, 60, 1, 86400);
   let up = props.mode === "up";
   let startedAt = performance.now();
@@ -151,13 +179,17 @@ function makeTimer(props: Props, env: WidgetEnv): WidgetInstance {
       if (!run && !paused) { paused = true; pausedAt = performance.now(); }
       nameEl.textContent = (str(p.label) || (up ? "stopwatch" : "timer")).toUpperCase();
     },
-    tick() {
+    tick(t) {
+      rx.spin(t);
       const e = elapsed();
       const left = up ? e : Math.max(0, total - e);
       const m = Math.floor(left / 60), sec = Math.floor(left % 60);
       timeEl.textContent = `${m}:${String(sec).padStart(2, "0")}`;
       const frac = up ? (e % 60) / 60 : left / total;
-      arc.setAttribute("d", arcPath(176, 0, Math.max(0.5, frac * 359.9)));
+      const a = Math.max(0.5, frac * 359.9);
+      arc.setAttribute("d", arcPath(RX_ARC, 0, a));
+      const [x, y] = polar(RX_ARC, a);
+      head.setAttribute("cx", x.toFixed(2)); head.setAttribute("cy", y.toFixed(2));
       const done = !up && left <= 0;
       el.classList.toggle("done", done);
       subEl.textContent = done ? "TIME" : paused ? "PAUSED" : "";
@@ -171,15 +203,14 @@ function makeTimer(props: Props, env: WidgetEnv): WidgetInstance {
 
 function makeGauge(props: Props, _env: WidgetEnv): WidgetInstance {
   const { el, svg } = shell();
+  const rx = reactor(svg);
   const A0 = -135, A1 = 135;
-  s("path", { d: arcPath(168, A0, A1), class: "arc-dim thick" }, svg);
-  const arc = s("path", { class: "arc-bright thick" }, svg);
-  ticks(svg, 140, 146, 55, "ticks", 5, 154);
-  const needle = s("line", { x1: 200, y1: 200, x2: 200, y2: 60, class: "needle" }, svg);
-  s("circle", { cx: 200, cy: 200, r: 7, class: "dot" }, svg);
-  const valEl = label(el, "wd-big", 232, 64);
-  const unitEl = label(el, "wd-sm", 300, 20);
-  const nameEl = label(el, "wd-cap", 330, 16);
+  s("path", { d: arcPath(RX_ARC, A0, A1), class: "rx-track" }, svg);
+  const arc = s("path", { class: "rx-arc" }, svg);
+  const head = s("circle", { r: 6, class: "rx-head" }, svg);
+  const valEl = label(el, "wd-big", 158, 58);
+  const unitEl = label(el, "wd-sm", 226, 15);
+  const nameEl = label(el, "wd-cap", 338, 13);
   let min = 0, max = 100, target = 0, shown = 0, unit = "", dec = 0;
   let warn = Infinity, crit = Infinity;
   const apply = (p: Props) => {
@@ -196,12 +227,14 @@ function makeGauge(props: Props, _env: WidgetEnv): WidgetInstance {
   return {
     el,
     update: apply,
-    tick(_t, dt) {
+    tick(t, dt) {
+      rx.spin(t);
       shown = ease(shown, target, 5, dt);
       const f = Math.max(0, Math.min(1, (shown - min) / (max - min)));
       const a = A0 + f * (A1 - A0);
-      arc.setAttribute("d", arcPath(168, A0, Math.max(A0 + 0.5, a)));
-      needle.setAttribute("transform", `rotate(${a} 200 200)`);
+      arc.setAttribute("d", arcPath(RX_ARC, A0, Math.max(A0 + 0.5, a)));
+      const [x, y] = polar(RX_ARC, Math.max(A0 + 0.5, a));
+      head.setAttribute("cx", x.toFixed(2)); head.setAttribute("cy", y.toFixed(2));
       valEl.textContent = fmt(shown, dec);
       const col = shown >= crit ? CRIT : shown >= warn ? WARN : "";
       el.style.setProperty("--alert", col);
@@ -215,14 +248,13 @@ function makeGauge(props: Props, _env: WidgetEnv): WidgetInstance {
 
 function makeProgress(props: Props, _env: WidgetEnv): WidgetInstance {
   const { el, svg } = shell();
-  s("circle", { cx: 200, cy: 200, r: 182, class: "ln-soft" }, svg);
-  s("path", { d: arcPath(160, 0, 359.9), class: "arc-dim thick" }, svg);
-  const arc = s("path", { class: "arc-bright thick" }, svg);
-  const head = s("circle", { r: 7, class: "dot" }, svg);
-  ticks(svg, 128, 133, 72, "ticks");
-  const valEl = label(el, "wd-big", 150, 80);
-  const nameEl = label(el, "wd-cap", 252, 17);
-  const subEl = label(el, "wd-cap dim", 280, 14);
+  const rx = reactor(svg);
+  s("path", { d: arcPath(RX_ARC, 0, 359.9), class: "rx-track" }, svg);
+  const arc = s("path", { class: "rx-arc" }, svg);
+  const head = s("circle", { r: 6, class: "rx-head" }, svg);
+  const valEl = label(el, "wd-big", 160, 56);
+  const nameEl = label(el, "wd-cap", 232, 13);
+  const subEl = label(el, "wd-cap dim", 254, 11);
   let target = 0, shown = 0;
   const apply = (p: Props) => {
     target = Math.max(0, Math.min(1, num(p.frac, p.value !== undefined ? num(p.value, 0) / 100 : 0)));
@@ -233,11 +265,13 @@ function makeProgress(props: Props, _env: WidgetEnv): WidgetInstance {
   return {
     el,
     update: apply,
-    tick(_t, dt) {
+    tick(t, dt) {
+      rx.spin(t);
       shown = ease(shown, target, 4, dt);
-      arc.setAttribute("d", arcPath(160, 0, Math.max(0.5, shown * 359.9)));
-      const [x, y] = polar(160, shown * 359.9);
-      head.setAttribute("cx", String(x)); head.setAttribute("cy", String(y));
+      const a = Math.max(0.5, shown * 359.9);
+      arc.setAttribute("d", arcPath(RX_ARC, 0, a));
+      const [x, y] = polar(RX_ARC, a);
+      head.setAttribute("cx", x.toFixed(2)); head.setAttribute("cy", y.toFixed(2));
       valEl.textContent = `${Math.round(shown * 100)}%`;
     },
     busy: () => target > 0 && target < 1,
@@ -249,18 +283,16 @@ function makeProgress(props: Props, _env: WidgetEnv): WidgetInstance {
 
 function makePower(props: Props, _env: WidgetEnv): WidgetInstance {
   const { el, svg } = shell();
-  const N = 64;
-  s("circle", { cx: 200, cy: 200, r: 186, class: "ln-soft" }, svg);
+  const rx = reactor(svg);
+  const N = 60;
   const segs: SVGElement[] = [];
   for (let i = 0; i < N; i++) {
-    const a = (i / N) * 360, b = a + (360 / N) * 0.62;
-    segs.push(s("path", { d: arcPath(162, a, b), class: "seg" }, svg));
+    const a = (i / N) * 360, b = a + (360 / N) * 0.7;
+    segs.push(s("path", { d: arcPath(RX_ARC, a, b), class: "seg" }, svg));
   }
-  s("circle", { cx: 200, cy: 200, r: 134, class: "ln" }, svg);
-  s("circle", { cx: 200, cy: 200, r: 126, class: "ln-dash" }, svg);
-  const valEl = label(el, "wd-big", 156, 66);
-  const nameEl = label(el, "wd-cap", 240, 17);
-  const subEl = label(el, "wd-cap dim", 268, 14);
+  const valEl = label(el, "wd-big", 160, 54);
+  const nameEl = label(el, "wd-cap", 232, 13);
+  const subEl = label(el, "wd-cap dim", 254, 11);
   let target = 0, shown = 0;
   const apply = (p: Props) => {
     target = Math.max(0, Math.min(100, num(p.value, 0)));
@@ -272,6 +304,7 @@ function makePower(props: Props, _env: WidgetEnv): WidgetInstance {
     el,
     update: apply,
     tick(t, dt) {
+      rx.spin(t);
       shown = ease(shown, target, 3, dt);
       const lit = (shown / 100) * N;
       for (let i = 0; i < N; i++) {

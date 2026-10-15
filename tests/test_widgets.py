@@ -58,7 +58,8 @@ def test_slot_and_id_are_sanitised():
 
 def test_update_and_close():
     msg, _ = w.build_update("g1", '{"value": 3}')
-    assert msg == {"t": "widget:update", "v": 1, "id": "g1", "props": {"value": 3}}
+    assert msg["t"] == "widget:update" and msg["id"] == "g1" and msg["props"] == {"value": 3}
+    assert msg["src"]["verified"] is False          # new numbers with no source are not vouched for
     assert w.build_update("", {"a": 1})[0] is None
     assert w.build_close("all")["id"] == "all"
     assert w.build_close("")["id"] == "all"
@@ -111,3 +112,39 @@ def test_catalog_prompt_lists_every_preset():
     for k in w.KINDS:
         if k not in ("scene", "code"):
             assert k in p, k
+
+
+# ── real data only ────────────────────────────────────────────────────────
+def test_source_must_match_a_tool_that_actually_returned():
+    now = 1000.0
+    recent = {"get_weather": 970.0, "system_stats": 995.0}
+    src = w.make_src("get_weather", recent, now=now)
+    assert src == {"name": "get_weather", "age": 30.0, "verified": True}
+    assert w.make_src("GET_WEATHER", recent, now=now)["verified"] is True
+    assert w.make_src("weather", recent, now=now)["verified"] is True       # a clear part of the tool name
+    assert w.make_src("made_up_tool", recent, now=now)["verified"] is False
+    assert w.make_src("", recent, now=now) == {"name": "none given", "age": 0.0, "verified": False}
+    assert w.make_src("get_weather", {}, now=now)["verified"] is False       # nothing ran this session
+    assert w.make_src("user", {}, now=now)["verified"] is True               # Sir said it himself
+
+
+def test_data_widgets_carry_a_source_and_others_do_not():
+    msg, _ = w.build_open("gauge", {"value": 5}, source="system_stats", recent={"system_stats": __import__("time").time() - 2})
+    assert msg["src"]["verified"] is True and 1 <= msg["src"]["age"] < 10
+    msg, _ = w.build_open("gauge", {"value": 5})
+    assert msg["src"]["verified"] is False and msg["src"]["name"] == "none given"
+    msg, _ = w.build_open("clock", {})
+    assert "src" not in msg                                                  # a clock measures nothing
+
+
+def test_stale_after_is_clamped_and_optional():
+    assert "stale_after" not in w.make_src("user", {})
+    assert w.make_src("user", {}, stale_after=99999999)["stale_after"] == 86400
+    assert w.make_src("user", {}, stale_after=-5).get("stale_after") is None
+
+
+def test_a_failed_source_opens_as_an_error_not_as_numbers():
+    msg, why = w.build_open("weather", {"error": "weather service timed out"}, source="get_weather")
+    assert why == "" and msg["props"]["error"] == "weather service timed out"
+    msg, why = w.build_open("weather", {"place": "Pune"})          # no temp and no error: still refused
+    assert msg is None and "temp" in why

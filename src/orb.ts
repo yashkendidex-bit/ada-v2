@@ -175,12 +175,25 @@ void main() {
     q = vec3(cs * q.x + sn * q.z, q.y, -sn * q.x + cs * q.z);
     float ct = cos(uTilt), st = sin(uTilt);
     q = vec3(q.x, ct * q.y - st * q.z, st * q.y + ct * q.z);
-    depth = smoothstep(-0.35, 0.7, q.z);
+    // Deep shell: the far side drops almost to black, the near side carries the light.
+    depth = smoothstep(-0.2, 0.85, q.z);
+    depth *= depth;
+    // One soft key light from the upper left that slowly drifts, so the sphere
+    // has a lit side and a dark side instead of an even glow.
+    vec3 L = normalize(vec3(-0.55 + 0.25 * sin(uTime * 0.23), 0.6 + 0.15 * cos(uTime * 0.17), 0.7));
+    float lit = 0.18 + 0.95 * pow(max(dot(normalize(q), L), 0.0), 1.6);
+    // A faint band of light that travels around the mesh.
+    float band = exp(-pow((q.y - 0.6 * sin(uTime * 0.4)) * 3.2, 2.0)) * 0.45;
+    depth *= lit + band;
+    // Light catching the edge of the shell, front and back, like glass seen at a grazing angle.
+    float rim = pow(1.0 - abs(normalize(q).z), 3.0);
+    depth += rim * 0.55;
   }
   vec4 mv = modelViewMatrix * vec4(q * uCore, 1.0);
   gl_Position = projectionMatrix * mv;
-  gl_PointSize = aP.x * uPx;
-  float a = aP.y * mix(0.2, 1.0, depth);
+  bool shell = kind < 2.5;   // the mesh and its sparkles; the rim rings keep their own brightness
+  gl_PointSize = aP.x * uPx * (shell ? mix(0.75, 1.5, clamp(depth, 0.0, 1.0)) : 1.0);
+  float a = shell ? aP.y * mix(0.04, 1.6, clamp(depth, 0.0, 1.4)) * 2.6 : aP.y;
   vWhite = 0.0;
   if (kind > 1.5 && kind < 2.5) {
     float tw = 0.5 + 0.5 * sin(uTime * (1.2 + aP.w * 2.0) * (1.0 + uSparkle) + aP.w * 50.0);

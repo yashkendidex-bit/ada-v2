@@ -171,11 +171,19 @@ def budget_ok(spec: dict) -> bool:
 
 # ── emit helpers (backend → frontend over `hud` event) ─────────────────
 async def emit_start(emit_fn, hud_id: str, title: str, skeleton: str = "Card",
-                   root: str | None = None):
-    await emit_fn("hud", {"t": "hud:start", "v": V, "hudId": hud_id,
-                          "title": _clean_str(title, 80),
-                          "root": _clean_str(root, 64) if root else None,
-                          "skeleton": skeleton if skeleton in CATALOG else "Card"})
+                   root: str | None = None, src: dict | None = None):
+    """src says where the numbers came from: {name, age, verified, sample}. The
+    screen shows it under the dashboard; without it the dashboard reads UNVERIFIED."""
+    msg = {"t": "hud:start", "v": V, "hudId": hud_id,
+           "title": _clean_str(title, 80),
+           "root": _clean_str(root, 64) if root else None,
+           "skeleton": skeleton if skeleton in CATALOG else "Card"}
+    if src:
+        msg["src"] = {"name": _clean_str(src.get("name", ""), 32),
+                      "age": float(src.get("age", 0) or 0),
+                      "verified": bool(src.get("verified", False)),
+                      "sample": bool(src.get("sample", False))}
+    await emit_fn("hud", msg)
 
 
 async def emit_chunk(emit_fn, hud_id: str, seq: int, upsert: dict, remove: list | None = None):

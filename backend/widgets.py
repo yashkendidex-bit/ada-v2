@@ -50,6 +50,13 @@ KINDS = (
 INNER_KINDS = ("clock", "timer", "gauge", "progress", "power", "tile",
                "connect", "radar", "waveform", "model3d", "notification", "scene")
 
+# Kinds that show measured values. These carry a source line on screen.
+DATA_KINDS = ("gauge", "progress", "power", "tile", "list", "table", "chart",
+              "weather", "status", "radar", "hud")
+
+# Sources that need no tool: the person said the number out loud.
+USER_SOURCES = ("user", "sir")
+
 SLOTS = ("auto", "inner", "n", "ne", "e", "se", "s", "sw", "w", "nw")
 
 PALETTES = ("teal", "cyan", "blue", "amber", "red", "green", "violet", "white")
@@ -88,11 +95,46 @@ Keep it live: update_widget(id, props) while you talk; close_widget(id) or id "a
 Something none of these can show -> build_scene (drawing primitives: ring arc line polyline rect circle
  text counter grid particles bars ticks polygon pulse, with spin/pulse/sweep animation). Only when even that
  cannot do it -> build_widget_code (a small HTML canvas program; sandboxed, no network, no libraries).
+REAL DATA ONLY. A widget that shows numbers (gauge, progress, power, tile, list, table, chart, weather, status,
+ radar) must show values a tool just returned or Sir just said. Never invent, estimate or "illustrate" a figure.
+ Pass source = the name of the tool the numbers came from (or "user" if Sir said them). The screen prints that
+ source and the age of the result under the widget, and marks it UNVERIFIED if it cannot match a tool you ran.
+ No tool gave you the numbers -> run the tool first, or say you do not have them. If the tool failed, open the
+ widget with props {"error": "what failed"} so the screen shows NO SIGNAL, or just say so out loud.
+ Charts plot only the points the tool returned. update_widget with new numbers needs source too.
 Open one to three widgets, not ten. Narrate the headline, never the pixels."""
 
 
 def catalog_prompt() -> str:
     return CATALOG_PROMPT
+
+
+# ── where the numbers came from ───────────────────────────────────────────
+def make_src(source, recent=None, stale_after=None, now=None) -> dict:
+    """Provenance for a widget message: which tool the numbers came from and how
+    old that result is. `recent` maps tool name -> time its result came back, kept
+    by the caller. A source that matches no recent tool is passed on as
+    unverified, and the screen says so. Nothing here changes a value."""
+    now = time.time() if now is None else now
+    name = _str(source, 32).strip()
+    key = name.lower()
+    verified, age = False, 0.0
+    if key in USER_SOURCES:
+        verified = True
+    elif key and recent:
+        best = None
+        for tool, ts in recent.items():
+            tl = tool.lower()
+            if tl == key or (len(key) >= 4 and (key in tl or tl in key)):
+                if best is None or ts > best:
+                    best = ts
+        if best is not None:
+            verified, age = True, max(0.0, now - best)
+    out = {"name": name or "none given", "age": round(age, 1), "verified": verified}
+    sa = _num(stale_after, 0, 86400, 0)
+    if sa > 0:
+        out["stale_after"] = sa
+    return out
 
 
 # ── cleaning ──────────────────────────────────────────────────────────────
@@ -197,8 +239,11 @@ def clean_ttl(t) -> int:
 
 
 # ── tier 1: presets ───────────────────────────────────────────────────────
-def build_open(kind, props=None, slot=None, color=None, wid=None, title=None, ttl=None):
-    """Make a validated widget:open message, or (None, reason)."""
+def build_open(kind, props=None, slot=None, color=None, wid=None, title=None, ttl=None,
+               source=None, stale_after=None, recent=None):
+    """Make a validated widget:open message, or (None, reason). `source` names the
+    tool whose result the numbers came from; `recent` is {tool: time} so it can be
+    checked. A props.error means the source failed: the widget shows NO SIGNAL."""
     kind = _str(kind, 20).strip().lower()
     if kind not in KINDS or kind in ("code",):
         return None, f"unknown widget kind '{kind}'. Kinds: {', '.join(k for k in KINDS if k != 'code')}"
@@ -219,21 +264,27 @@ def build_open(kind, props=None, slot=None, color=None, wid=None, title=None, tt
         if clean.get("root") not in nodes:
             clean["root"] = next(iter(nodes))
     need = _REQUIRED.get(kind, ())
-    if any(clean.get(k) is None for k in need):
+    failed = isinstance(clean, dict) and isinstance(clean.get("error"), str) and clean["error"].strip()
+    if failed:
+        clean["error"] = clean["error"].strip()[:120]
+    elif any(clean.get(k) is None for k in need):
         return None, f"{kind} needs: {', '.join(need)}"
     if len(json.dumps(clean)) > MAX_PROPS_BYTES:
         return None, "props too large"
     if title:
         clean["title"] = _str(title, 80)
     kind_slot = clean_slot(slot, kind)
-    return {
+    msg = {
         "t": "widget:open", "v": V, "id": clean_id(wid, kind), "kind": kind,
         "props": clean, "slot": kind_slot, "color": clean_color(color),
         "ttl": clean_ttl(ttl),
-    }, ""
+    }
+    if kind in DATA_KINDS:
+        msg["src"] = make_src(source, recent, stale_after)
+    return msg, ""
 
 
-def build_update(wid, props):
+def build_update(wid, props, source=None, stale_after=None, recent=None):
     parsed = _parse_json(props)
     if not isinstance(parsed, dict):
         return None, "props must be a JSON object"
@@ -243,7 +294,11 @@ def build_update(wid, props):
     wid = re.sub(r"[^a-zA-Z0-9_\-]", "", str(wid or ""))[:48]
     if not wid:
         return None, "update needs the widget id"
-    return {"t": "widget:update", "v": V, "id": wid, "props": clean}, ""
+    msg = {"t": "widget:update", "v": V, "id": wid, "props": clean}
+    # New numbers need a source. Without one the widget turns UNVERIFIED instead of
+    # pretending the update was measured.
+    msg["src"] = make_src(source, recent, stale_after)
+    return msg, ""
 
 
 def build_close(wid):

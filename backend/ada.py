@@ -333,6 +333,8 @@ show_widget_tool = {
             "id": {"type": "STRING", "description": "Optional id, to replace or update the same widget later"},
             "title": {"type": "STRING", "description": "Optional title"},
             "ttl": {"type": "INTEGER", "description": "Seconds until it closes by itself (0 = stays)"},
+            "source": {"type": "STRING", "description": "REQUIRED for any widget showing numbers: the name of the tool that returned them (e.g. get_weather), or 'user' if Sir said them. Never invent data."},
+            "stale_after": {"type": "INTEGER", "description": "Optional: seconds after which these values count as old (default 120; weather 1800)"},
         },
         "required": ["kind"]
     },
@@ -346,6 +348,7 @@ update_widget_tool = {
         "properties": {
             "id": {"type": "STRING", "description": "Widget id from show_widget"},
             "props": {"type": "STRING", "description": "JSON object of the props to change"},
+            "source": {"type": "STRING", "description": "Tool that returned the new numbers (or 'user'). Without it the widget shows UNVERIFIED."},
         },
         "required": ["id", "props"]
     },
@@ -1400,7 +1403,7 @@ class AudioLoop:
         "remember", "recall", "recall_episodes", "notebook_read",
         "search_web", "run_web_agent", "generate_cad", "iterate_cad",
         "create_reminder", "system_info", "read_file", "calendar_event",
-        "show_widget", "close_widget",
+        "show_widget", "update_widget", "close_widget",
     })
     _tools_cache = {}  # (has_model, lean) -> converted list
 
@@ -3041,7 +3044,29 @@ class AudioLoop:
 
     # ---------- TOOL HANDLERS ----------
 
+    # Tools that put things on screen are not data sources.
+    _NON_DATA_TOOLS = frozenset({"show_widget", "update_widget", "close_widget", "build_scene",
+                                 "build_widget_code", "show_hud", "hud_demo"})
+
     async def _execute_tool(self, name, args):
+        """Run a tool and remember when it last returned something real. Widgets
+        name their source, and widgets.make_src checks it against this."""
+        res = await self._execute_tool_raw(name, args)
+        try:
+            if name not in self._NON_DATA_TOOLS:
+                body = res.get("result") if isinstance(res, dict) else res
+                bad = (isinstance(res, dict) and "error" in res) or (
+                    isinstance(body, str) and body.strip().lower().startswith(
+                        ("error", "failed", "could not", "couldn't", "unable", "no screen")))
+                if not bad:
+                    if not hasattr(self, "_recent_tools"):
+                        self._recent_tools = {}
+                    self._recent_tools[name] = time.time()
+        except Exception:
+            pass
+        return res
+
+    async def _execute_tool_raw(self, name, args):
         args = dict(args) if args else {}
 
         # Conversational model surgery — JARVIS 'remove this, this and this'
@@ -3279,7 +3304,9 @@ class AudioLoop:
                 return {"result": "No screen connected — speak it instead."}
             if name == "show_widget":
                 msg, why = _w.build_open(args.get("kind"), args.get("props"), args.get("slot"),
-                                         args.get("color"), args.get("id"), args.get("title"), args.get("ttl"))
+                                         args.get("color"), args.get("id"), args.get("title"), args.get("ttl"),
+                                         source=args.get("source"), stale_after=args.get("stale_after"),
+                                         recent=getattr(self, "_recent_tools", {}))
             elif name == "build_scene":
                 msg, why = _w.build_scene(args.get("title"), args.get("elements"), args.get("slot"),
                                           args.get("color"), None, None, args.get("id"), args.get("ttl"))
@@ -3287,7 +3314,8 @@ class AudioLoop:
                 msg, why = _w.build_code(args.get("title"), args.get("html"), args.get("slot"),
                                          args.get("id"), args.get("ttl"), None)
             elif name == "update_widget":
-                msg, why = _w.build_update(args.get("id"), args.get("props"))
+                msg, why = _w.build_update(args.get("id"), args.get("props"), source=args.get("source"),
+                                           recent=getattr(self, "_recent_tools", {}))
             else:
                 msg, why = _w.build_close(args.get("id")), ""
             if msg is None:
@@ -3297,7 +3325,13 @@ class AudioLoop:
                 return {"result": "Cleared. Say nothing more about it."}
             if name == "update_widget":
                 return {"result": f"Widget {msg['id']} updated."}
-            return {"result": (f"Widget '{msg['id']}' ({msg['kind']}) is on screen, Sir. "
+            note = ""
+            src = msg.get("src")
+            if src is not None and not src.get("verified"):
+                note = (" It is marked UNVERIFIED on screen because source "
+                        f"'{src.get('name')}' matches no tool that returned data. Run the tool, "
+                        "or say you do not have the numbers.")
+            return {"result": (f"Widget '{msg['id']}' ({msg['kind']}) is on screen, Sir.{note} "
                                "Narrate the headline, not the pixels.")}
 
         if name == "show_hud":
@@ -3328,7 +3362,9 @@ class AudioLoop:
             if args.get("title"):
                 spec["title"] = str(args["title"])[:80]
             emit = self._hud_emit
-            await emit_start(emit, spec["hudId"], spec["title"])
+            # Authored by the model, not measured here: the screen says UNVERIFIED.
+            await emit_start(emit, spec["hudId"], spec["title"],
+                             src={"name": "model-authored", "verified": False})
             items = list(spec["nodes"].items())
             await emit_chunk(emit, spec["hudId"], 1, dict(items[:4]))
             if len(items) > 4:
@@ -4358,7 +4394,7 @@ class AudioLoop:
         hid = spec["hudId"]
         emit = self._hud_emit
         try:
-            await emit_start(emit, hid, spec["title"])
+            await emit_start(emit, hid, spec["title"], src={"name": "demo", "sample": True})
             items = list(spec["nodes"].items())
             await emit_chunk(emit, hid, 1, dict(items[:3]))
             await _aio.sleep(0.4)
@@ -4417,7 +4453,9 @@ class AudioLoop:
             return ("That dashboard didn't survive validation, Sir — "
                     "speak the key numbers in one line instead.")
         emit = self._hud_emit
-        await emit_start(emit, spec["hudId"], spec["title"])
+        # Auto-composed from measured values (see _compose_status_hud): verified, fresh now.
+        await emit_start(emit, spec["hudId"], spec["title"],
+                         src={"name": "workshop telemetry", "age": 0, "verified": True})
         items = list(spec["nodes"].items())
         await emit_chunk(emit, spec["hudId"], 1, dict(items[:4]))
         if len(items) > 4:

@@ -8,7 +8,14 @@
  *
  * Placement: dials open inside the orb, panels open around it, on whichever
  * side has room. The orb dims behind an inner widget and churns while a widget
- * reports that a task is running.
+ * reports that a task is running. Each panel is tied to the orb by a thin
+ * leader line.
+ *
+ * Real data only: every widget that shows measured values carries where they
+ * came from and how old they are (`src` on the message, set by the backend from
+ * the tool that actually ran). The footer under it says LIVE, STALE,
+ * UNVERIFIED or SAMPLE; a failed source dims the widget and says NO SIGNAL.
+ * Nothing here ever invents or smooths a value.
  */
 import type { KindSpec, Props, Slot, WidgetEnv, WidgetInstance, Palette } from "./types";
 import { KINDS, INNER_KINDS } from "./kinds";
@@ -39,6 +46,38 @@ const TOP_RESERVE = 60;
 const BOTTOM_RESERVE = 150;
 const AUTO_ORDER: Slot[] = ["e", "w", "ne", "nw", "se", "sw", "n", "s"];
 
+/** Kinds that show measured values, so they carry a source line. Clocks, timers, text and scenes do not. */
+const DATA_KINDS = new Set(["gauge", "progress", "power", "tile", "list", "table", "chart", "weather", "status", "radar", "hud"]);
+/** Seconds before a value counts as old, unless the backend says otherwise. */
+const STALE_AFTER: Record<string, number> = { weather: 1800, chart: 1800, table: 600, list: 600 };
+
+type Health = "live" | "stale" | "none" | "unverified" | "sample";
+const HEALTH_TAG: Record<Health, string> = { live: "LIVE", stale: "STALE", none: "NO SIGNAL", unverified: "UNVERIFIED", sample: "SAMPLE" };
+
+interface Src { name: string; anchor: number; verified: boolean; staleAfter: number; sample: boolean }
+
+function parseSrc(raw: unknown, kind: string, now: number): Src | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const age = Math.max(0, Number(o.age) || 0);
+  const sa = Number(o.stale_after);
+  return {
+    name: typeof o.name === "string" ? o.name.replace(/[^\w .:/+-]/g, "").slice(0, 32) : "",
+    anchor: now - age * 1000,
+    verified: o.verified === true,
+    staleAfter: Number.isFinite(sa) && sa > 0 ? Math.min(sa, 86400) : (STALE_AFTER[kind] ?? 120),
+    sample: o.sample === true,
+  };
+}
+
+function ageText(sec: number): string {
+  if (sec < 90) return `${Math.max(0, Math.floor(sec))}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)}m`;
+  return `${Math.round(sec / 3600)}h`;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
 interface Rect { x: number; y: number; w: number; h: number }
 
 interface Entry {
@@ -57,6 +96,11 @@ interface Entry {
   ttl: number | null;
   closing: boolean;
   ro: ResizeObserver | null;
+  src: Src | null;
+  health: Health | "";
+  prov: { el: HTMLElement; tag: HTMLElement; name: HTMLElement; age: HTMLElement } | null;
+  nosig: HTMLElement | null;
+  leader: SVGGElement | null;
 }
 
 const hit = (a: Rect, b: Rect, pad = 8): boolean =>
@@ -87,8 +131,14 @@ export class WidgetManager {
   private destroyed = false;
   private calm = false;
   private hudProps = new Map<string, Props>();
+  private leaders: SVGSVGElement;
+  private provAt = 0;
 
   constructor(private opts: ManagerOptions) {
+    this.leaders = document.createElementNS(SVG_NS, "svg");
+    this.leaders.setAttribute("id", "wd-leaders");
+    this.leaders.setAttribute("aria-hidden", "true");
+    opts.layer.prepend(this.leaders);
     const mq = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     this.calm = !!mq?.matches;
     document.body.classList.toggle("calm", this.calm);
@@ -103,9 +153,9 @@ export class WidgetManager {
     const t = String(msg.t ?? "");
     try {
       if (t === "widget:open") this.open(msg);
-      else if (t === "widget:update") this.update(String(msg.id ?? ""), (msg.props as Props) ?? {});
+      else if (t === "widget:update") this.update(String(msg.id ?? ""), (msg.props as Props) ?? {}, msg.src);
       else if (t === "widget:close") this.close(String(msg.id ?? ""));
-      else if (t === "widget:data") this.data(String(msg.id ?? ""), String(msg.path ?? ""), msg.value);
+      else if (t === "widget:data") this.data(String(msg.id ?? ""), String(msg.path ?? ""), msg.value, msg.src);
       else if (t.startsWith("hud:")) this.hud(t, msg);
     } catch (e) {
       console.warn("[widgets] could not handle", t, e);
@@ -113,9 +163,12 @@ export class WidgetManager {
   }
 
   /** Open a widget from the screen itself (the dock). */
-  openLocal(kind: string, props: Props, slot: Slot = "auto", color = "teal", id?: string): string {
+  openLocal(kind: string, props: Props, slot: Slot = "auto", color = "teal", id?: string, sample = false): string {
     const wid = id ?? `${kind}-local`;
-    this.open({ t: "widget:open", id: wid, kind, props, slot, color, ttl: 0 });
+    this.open({
+      t: "widget:open", id: wid, kind, props, slot, color, ttl: 0,
+      src: sample ? { name: "showcase", sample: true } : undefined,
+    });
     return wid;
   }
 
@@ -164,6 +217,8 @@ export class WidgetManager {
     const existing = this.entries.get(id);
     if (existing && !existing.closing && existing.kind === kind) {
       existing.props = { ...existing.props, ...props };
+      if (props.error === undefined) delete existing.props.error;   // fresh numbers clear an old failure
+      this.setSrc(existing, msg.src);
       assignPalette(existing.pal, resolvePalette(color));
       paletteVars(existing.host, existing.pal);
       existing.inst.update(existing.props);
@@ -205,6 +260,21 @@ export class WidgetManager {
     x.addEventListener("click", (ev) => { ev.stopPropagation(); this.close(id); });
     x.addEventListener("pointerdown", (ev) => ev.stopPropagation());
     host.appendChild(x);
+    let prov: Entry["prov"] = null;
+    let nosig: HTMLElement | null = null;
+    if (DATA_KINDS.has(kind)) {
+      const pe = document.createElement("div");
+      pe.className = "wd-prov";
+      const tag = document.createElement("span"); tag.className = "tg";
+      const nm = document.createElement("span");
+      const ag = document.createElement("span");
+      pe.append(tag, nm, ag);
+      host.appendChild(pe);
+      prov = { el: pe, tag, name: nm, age: ag };
+      nosig = document.createElement("div");
+      nosig.className = "wd-nosig";
+      host.appendChild(nosig);
+    }
     host.style.visibility = "hidden";
     this.opts.layer.appendChild(host);
 
@@ -212,7 +282,9 @@ export class WidgetManager {
       id, kind, spec, inst, props, pal, host, fx, inner,
       slot: inner ? "inner" : slotIn, rect: { x: 0, y: 0, w: 0, h: 0 },
       manual: null, ttl: null, closing: false, ro: null,
+      src: null, health: "", prov, nosig, leader: null,
     };
+    this.setSrc(entry, msg.src);
     this.entries.set(id, entry);
 
     if (!inner) this.chooseAround(entry);
@@ -230,21 +302,67 @@ export class WidgetManager {
       entry.ro.observe(inst.el);
     }
     this.armTtl(entry, Number(msg.ttl) || 0);
+    this.refreshProv(entry, performance.now(), true);
     this.updateFocus();
     this.emit();
   }
 
-  private update(id: string, props: Props): void {
+  private setSrc(e: Entry, raw: unknown): void {
+    if (!e.prov) return;
+    const s = parseSrc(raw, e.kind, performance.now());
+    if (s) e.src = s;
+  }
+
+  /** LIVE / STALE / UNVERIFIED / SAMPLE / NO SIGNAL, from what the backend said and how long ago. */
+  private healthOf(e: Entry, now: number): Health {
+    if (typeof e.props.error === "string" && e.props.error) return "none";
+    if (!e.src) return "unverified";
+    if (e.src.sample) return "sample";
+    if (!e.src.verified) return "unverified";
+    return (now - e.src.anchor) / 1000 > e.src.staleAfter ? "stale" : "live";
+  }
+
+  private refreshProv(e: Entry, now: number, force = false): void {
+    if (!e.prov) return;
+    const hl = this.healthOf(e, now);
+    if (hl !== e.health) {
+      e.health = hl;
+      for (const k of Object.keys(HEALTH_TAG)) e.host.classList.toggle(`st-${k}`, k === hl);
+      e.prov.tag.textContent = HEALTH_TAG[hl];
+      if (e.nosig) {
+        e.nosig.textContent = "";
+        if (hl === "none") {
+          const a = document.createElement("div"); a.textContent = "NO SIGNAL";
+          const b = document.createElement("div"); b.className = "why";
+          b.textContent = String(e.props.error).slice(0, 90);
+          e.nosig.append(a, b);
+        }
+      }
+    }
+    if (hl === "none" && e.nosig) {
+      const why = e.nosig.querySelector(".why");
+      if (why && why.textContent !== String(e.props.error).slice(0, 90)) why.textContent = String(e.props.error).slice(0, 90);
+    }
+    const name = e.src?.name || "none given";
+    if (force || e.prov.name.textContent !== `SRC ${name}`) e.prov.name.textContent = `SRC ${name}`;
+    const age = e.src && !e.src.sample ? `AGE ${ageText((now - e.src.anchor) / 1000)}` : "";
+    if (e.prov.age.textContent !== age) e.prov.age.textContent = age;
+  }
+
+  private update(id: string, props: Props, src?: unknown): void {
     const e = this.entries.get(id);
     if (!e || e.closing) return;
+    this.setSrc(e, src);
     e.props = { ...e.props, ...props };
+    if (props.error === undefined) delete e.props.error;
     if (typeof props.color === "string") { assignPalette(e.pal, resolvePalette(props.color)); paletteVars(e.host, e.pal); }
     e.inst.update(e.props);
   }
 
-  private data(id: string, path: string, value: unknown): void {
+  private data(id: string, path: string, value: unknown, src?: unknown): void {
     const e = this.entries.get(id);
     if (!e || e.closing) return;
+    this.setSrc(e, src);
     if (setPath(e.props as Record<string, unknown>, path, value)) e.inst.update(e.props);
   }
 
@@ -260,6 +378,7 @@ export class WidgetManager {
     if (fast || this.calm) { done(); return; }
     e.fx.classList.remove("in");
     e.fx.classList.add("out");
+    e.leader?.classList.add("gone");
     setTimeout(done, 460);
   }
 
@@ -268,6 +387,7 @@ export class WidgetManager {
     if (e.ttl !== null) clearTimeout(e.ttl);
     try { e.inst.destroy(); } catch { /* a widget failing to clean up must not stop the rest */ }
     e.host.remove();
+    e.leader?.remove();
   }
 
   private armTtl(e: Entry, seconds: number): void {
@@ -284,12 +404,14 @@ export class WidgetManager {
     if (t === "hud:start") {
       const props: Props = { title: String(msg.title ?? "HUD"), nodes: {}, root: msg.root ?? "", loading: true };
       this.hudProps.set(wid, props);
-      this.open({ t: "widget:open", id: wid, kind: "hud", props, slot: "auto", color: "teal", ttl: 0 });
+      this.open({ t: "widget:open", id: wid, kind: "hud", props, slot: "auto", color: "teal", ttl: 0, src: msg.src });
       return;
     }
     const props = this.hudProps.get(wid);
     const e = this.entries.get(wid);
     if (!props || !e) return;
+    // A live number pushed into a dashboard from a measured source refreshes its age.
+    if (t === "hud:data" || t === "hud:chunk") this.setSrc(e, msg.src ?? (e.src ? { name: e.src.name, verified: e.src.verified, sample: e.src.sample, stale_after: e.src.staleAfter } : undefined));
     const nodes = props.nodes as Record<string, unknown>;
     if (t === "hud:chunk") {
       const up = (msg.upsert ?? {}) as Record<string, unknown>;
@@ -409,6 +531,56 @@ export class WidgetManager {
     e.host.style.height = `${h}px`;
     e.host.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${sc.toFixed(4)})`;
     e.host.style.setProperty("--inv", (1 / sc).toFixed(3));
+    this.drawLeader(e, sc);
+  }
+
+  /**
+   * A thin line from the orb's ring to the widget's near edge: out along the ring's
+   * direction, one bend, then straight into the title. Only panels around the orb get one.
+   */
+  private drawLeader(e: Entry, sc: number): void {
+    if (e.inner || e.closing) { e.leader?.remove(); e.leader = null; return; }
+    const { cx, cy, r } = this.opts.orb.getLayout();
+    const rc = e.rect;
+    const mx = rc.x + rc.w / 2, my = rc.y + rc.h / 2;
+    let px: number, py: number, dir = 0;
+    if (mx > cx + r * 0.55) { dir = 1; px = rc.x - 4; py = rc.y + 14 * sc; }
+    else if (mx < cx - r * 0.55) { dir = -1; px = rc.x + rc.w + 4; py = rc.y + 14 * sc; }
+    else if (my < cy) { px = mx; py = rc.y + rc.h + 4; }
+    else { px = mx; py = rc.y - 4; }
+    const ang = Math.atan2(py - cy, px - cx);
+    const ax = cx + Math.cos(ang) * r * 1.07, ay = cy + Math.sin(ang) * r * 1.07;
+    let d: string;
+    if (dir !== 0) {
+      const run = dir * (px - ax);
+      if (run < 10) { e.leader?.remove(); e.leader = null; return; }
+      const ex = px - dir * Math.min(30, run * 0.5);
+      d = `M ${ax.toFixed(1)} ${ay.toFixed(1)} L ${ex.toFixed(1)} ${py.toFixed(1)} L ${px.toFixed(1)} ${py.toFixed(1)}`;
+    } else {
+      d = `M ${ax.toFixed(1)} ${ay.toFixed(1)} L ${px.toFixed(1)} ${py.toFixed(1)}`;
+    }
+    if (!e.leader) {
+      const g = document.createElementNS(SVG_NS, "g");
+      g.setAttribute("class", "wd-leader");
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("pathLength", "1");
+      const dot = document.createElementNS(SVG_NS, "circle");
+      dot.setAttribute("r", "3");
+      const end = document.createElementNS(SVG_NS, "rect");
+      end.setAttribute("width", "4"); end.setAttribute("height", "4");
+      g.append(path, dot, end);
+      this.leaders.appendChild(g);
+      e.leader = g;
+      if (!this.calm) {
+        g.classList.add("draw");
+        path.addEventListener("animationend", () => g.classList.remove("draw"), { once: true });
+      }
+    }
+    e.leader.style.setProperty("--lc", e.pal.c);
+    const [path, dot, end] = Array.from(e.leader.children) as [SVGPathElement, SVGCircleElement, SVGRectElement];
+    path.setAttribute("d", d);
+    dot.setAttribute("cx", ax.toFixed(1)); dot.setAttribute("cy", ay.toFixed(1));
+    end.setAttribute("x", (px - 2).toFixed(1)); end.setAttribute("y", (py - 2).toFixed(1));
   }
 
   private relayoutAll(): void {
@@ -462,6 +634,11 @@ export class WidgetManager {
         console.warn("[widgets] tick failed, closing", e.kind, err);
         this.close(e.id, true);
       }
+    }
+    if (ts - this.provAt > 500) {
+      this.provAt = ts;
+      const now = performance.now();
+      for (const e of this.entries.values()) if (!e.closing) this.refreshProv(e, now);
     }
     if (ts - this.busyAt > 120) {
       this.busyAt = ts;

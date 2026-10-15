@@ -9,6 +9,7 @@
   --warn: #ffb43f;
   --bad: #ff5a5a;
   --wd-font: "Eurostile", "Bank Gothic", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --wd-mono: ui-monospace, "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
 }
 
 /* ── placement and entrance ──────────────────────────────────────────── */
@@ -133,6 +134,16 @@
 .bar { stroke: var(--c); stroke-width: 3; stroke-linecap: round; }
 .svg-t { fill: var(--c2); font: 600 11px var(--wd-font); letter-spacing: 0.12em; }
 
+/* arc reactor dials: clock, timer, gauge, progress, power */
+.rx-seg { fill: none; stroke: var(--c); stroke-width: 13; opacity: 0.5; }
+.rx-core { fill: rgba(var(--rgb), 0.06); stroke: rgba(var(--rgb), 0.5); stroke-width: 1.2; }
+.rx-ptr { fill: var(--c2); opacity: 0.85; }
+.rx-track { fill: none; stroke: rgba(var(--rgb), 0.15); stroke-width: 16; }
+.rx-arc { fill: none; stroke: var(--alert, var(--c)); stroke-width: 16; filter: drop-shadow(0 0 7px var(--alert, var(--c))); }
+.rx-head { fill: var(--alert, var(--c2)); filter: drop-shadow(0 0 6px var(--alert, var(--c2))); }
+.wd-svg .seg { stroke-width: 16; }
+.wd.done .rx-arc { stroke: var(--bad); animation: wd-blink 0.8s steps(2) infinite; }
+
 .wd-t {
   position: absolute;
   left: 0;
@@ -157,25 +168,14 @@
 .wp {
   position: relative;
   width: 340px;
-  padding: 16px 18px 16px;
-  background: linear-gradient(180deg, rgba(var(--rgb), 0.09), rgba(var(--rgb), 0.025));
-  border: 1px solid rgba(var(--rgb), 0.26);
-  box-shadow: 0 0 22px rgba(var(--rgb), 0.12), inset 0 0 28px rgba(var(--rgb), 0.05);
+  padding: 4px 6px 6px 12px;
   color: var(--c2);
   font-size: 14px;
   box-sizing: border-box;
+  /* No box: the text floats. A very soft wash keeps it readable over the lit part of the screen. */
+  background: radial-gradient(ellipse at 30% 40%, rgba(0, 8, 10, 0.55), rgba(0, 8, 10, 0) 72%);
+  text-shadow: 0 0 10px rgba(0, 6, 8, 0.95);
 }
-.wp::before, .wp::after {
-  content: "";
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--c);
-  pointer-events: none;
-}
-.wp::before { left: -2px; top: -2px; border-right: 0; border-bottom: 0; }
-.wp::after { right: -2px; bottom: -2px; border-left: 0; border-top: 0; }
-
 .wp.wide { width: 420px; }
 .wp.xwide { width: 460px; }
 
@@ -183,21 +183,22 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.28em;
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
   text-transform: uppercase;
-  color: var(--c);
+  color: var(--c2);
 }
-.wp-head::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(var(--rgb), 0.55), transparent); }
+.wp-head::before { content: ""; flex: none; width: 6px; height: 6px; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.wp-head::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--c), transparent); }
 .wp-head:empty { display: none; }
 
-.wp-cap { font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--c); opacity: 0.75; }
-.wp-sub { font-size: 12px; color: var(--c); opacity: 0.7; letter-spacing: 0.06em; }
+.wp-cap { font: 500 10px var(--wd-mono); letter-spacing: 0.2em; text-transform: uppercase; color: var(--c); opacity: 0.8; }
+.wp-sub { font: 400 11px var(--wd-mono); color: var(--c); opacity: 0.75; letter-spacing: 0.06em; }
 
 /* tile */
-.wp-tile { width: 300px; text-align: center; padding: 20px 18px; }
+.wp-tile { width: 300px; text-align: center; padding: 14px 12px; }
 .wp-tile .val { font-size: 64px; font-weight: 200; line-height: 1; font-variant-numeric: tabular-nums; text-shadow: 0 0 18px rgba(var(--rgb), 0.6); margin: 8px 0 6px; }
 .wp-tile .unit { font-size: 18px; font-weight: 400; color: var(--c); margin-left: 6px; letter-spacing: 0.08em; }
 .wp-tile .trend { display: inline-block; margin-left: 8px; font-size: 18px; vertical-align: middle; }
@@ -223,8 +224,8 @@
 .row .mk.busy { background: var(--c2); animation: wd-pulse 0.9s ease-in-out infinite; }
 .row .tx { flex: 1; min-width: 0; font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
 .row .tx.todo { opacity: 0.5; }
-.row .sb { font-size: 11px; color: var(--c); opacity: 0.7; letter-spacing: 0.05em; margin-top: 2px; }
-.row .vl { flex: none; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--c); }
+.row .sb { font: 400 11px var(--wd-mono); color: var(--c); opacity: 0.7; letter-spacing: 0.04em; margin-top: 2px; }
+.row .vl { flex: none; font: 500 13px var(--wd-mono); font-variant-numeric: tabular-nums; color: var(--c2); }
 .row.enter { animation: wd-row 0.5s both; }
 @keyframes wd-row { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
 
@@ -235,7 +236,7 @@
 
 /* table */
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
-.tbl th { text-align: left; font-size: 10px; font-weight: 500; letter-spacing: 0.2em; text-transform: uppercase; color: var(--c); padding: 0 8px 7px 0; border-bottom: 1px solid rgba(var(--rgb), 0.35); }
+.tbl th { text-align: left; font: 500 10px var(--wd-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--c); padding: 0 8px 7px 0; border-bottom: 1px solid rgba(var(--rgb), 0.35); }
 .tbl td { padding: 7px 8px 7px 0; border-bottom: 1px solid rgba(var(--rgb), 0.12); overflow-wrap: anywhere; }
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl td.n, .tbl th.n { text-align: right; padding-right: 0; }
@@ -253,9 +254,10 @@
 .wp-wx .tp small { font-size: 20px; font-weight: 400; color: var(--c); margin-left: 3px; }
 .wp-wx .cd { font-size: 14px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 4px; }
 .wp-wx .hl { font-size: 12px; color: var(--c); letter-spacing: 0.1em; margin-top: 3px; }
-.wp-wx .dt { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
-.wp-wx .dt div { display: flex; justify-content: space-between; font-size: 12px; border-bottom: 1px solid rgba(var(--rgb), 0.14); padding-bottom: 4px; }
-.wp-wx .dt span:first-child { color: var(--c); letter-spacing: 0.1em; text-transform: uppercase; font-size: 10px; align-self: center; }
+.wp-wx .dt { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; }
+.wp-wx .dt div { display: flex; flex-direction: column; gap: 2px; }
+.wp-wx .dt span:first-child { color: var(--c); font: 500 10px var(--wd-mono); letter-spacing: 0.16em; text-transform: uppercase; }
+.wp-wx .dt span:last-child { font-size: 24px; font-weight: 300; line-height: 1.1; color: var(--c2); font-variant-numeric: tabular-nums; }
 
 /* chart and image */
 .wp-chart canvas, .wp-3d canvas { display: block; }
@@ -289,6 +291,62 @@
 .hud-kv { display: flex; justify-content: space-between; gap: 14px; font-size: 12px; padding: 3px 0; border-bottom: 1px solid rgba(var(--rgb), 0.12); }
 .hud-kv span:first-child { color: var(--c); letter-spacing: 0.08em; }
 .hud-skel { height: 90px; border: 1px dashed rgba(var(--rgb), 0.3); animation: wd-blink 1.2s ease-in-out infinite; }
+
+/* ── leader lines ───────────────────────────────────────────────────── */
+
+#wd-leaders { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.wd-leader { transition: opacity 0.4s; }
+.wd-leader.gone { opacity: 0; }
+.wd-leader path { fill: none; stroke: var(--lc); stroke-width: 1; opacity: 0.85; filter: drop-shadow(0 0 3px var(--lc)); }
+.wd-leader circle { fill: var(--lc); filter: drop-shadow(0 0 5px var(--lc)); }
+.wd-leader rect { fill: var(--lc); }
+.wd-leader.draw path { stroke-dasharray: 1; animation: wd-lead 0.9s cubic-bezier(0.3, 0.7, 0.2, 1) both; }
+.wd-leader.draw circle, .wd-leader.draw rect { animation: wd-lead-dot 0.9s ease both; }
+@keyframes wd-lead { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes wd-lead-dot { 0%, 40% { opacity: 0; } 100% { opacity: 1; } }
+
+/* ── where the numbers came from ─────────────────────────────────────── */
+
+.wd-prov {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px * var(--inv, 1));
+  width: calc(100% / var(--inv, 1));
+  transform: scale(var(--inv, 1));
+  transform-origin: 0 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 400 9.5px var(--wd-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c);
+  opacity: 0.9;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.wd-prov .tg { padding: 0 6px; border: 1px solid currentColor; letter-spacing: 0.16em; color: var(--c2); }
+.wd-host.st-stale .wd-prov .tg, .wd-host.st-unverified .wd-prov .tg, .wd-host.st-sample .wd-prov .tg { color: var(--warn); }
+.wd-host.st-none .wd-prov .tg { color: var(--bad); }
+.wd-host.st-stale .wd-fx { opacity: 0.5; }
+.wd-host.st-stale .wd-fx .wp, .wd-host.st-stale .wd-fx .wd { filter: saturate(0.4); }
+.wd-host.st-none .wd-fx { opacity: 0.18; }
+.wd-host.st-none .wd-fx .wd-t, .wd-host.st-none .wd-fx .wp > * { visibility: hidden; }
+.wd-nosig {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  display: none;
+  text-align: center;
+  font: 600 13px var(--wd-mono);
+  letter-spacing: 0.32em;
+  color: var(--bad);
+  text-shadow: 0 0 12px var(--bad);
+  pointer-events: none;
+}
+.wd-nosig .why { margin-top: 8px; max-width: 240px; font: 400 10px var(--wd-mono); letter-spacing: 0.06em; text-transform: none; color: var(--c); text-shadow: none; white-space: normal; }
+.wd-host.st-none .wd-nosig { display: block; }
 
 /* ── dock ────────────────────────────────────────────────────────────── */
 

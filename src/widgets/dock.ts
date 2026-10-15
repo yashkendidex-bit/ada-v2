@@ -34,7 +34,7 @@ export function createDock(mgr: WidgetManager): void {
   add("timer", "Timer", () => toggle("timer-local", () => mgr.openLocal("timer", { seconds: 300, label: "timer" })));
   add("showcase", "Showcase", () => {
     mgr.closeAll();
-    mgr.openLocal("power", { label: "power level", value: 100, sub: "all systems" }, "inner", "teal", "demo-power");
+    mgr.openLocal("power", { label: "power level", value: 100, sub: "all systems" }, "inner", "teal", "demo-power", true);
     mgr.openLocal("status", {
       title: "Systems",
       items: [
@@ -43,12 +43,12 @@ export function createDock(mgr: WidgetManager): void {
         { label: "Printer", state: "warn", value: "idle" },
         { label: "Vision", state: "busy", value: "scanning" },
       ],
-    }, "e", "teal", "demo-status");
+    }, "e", "teal", "demo-status", true);
     mgr.openLocal("chart", {
       title: "Activity", type: "area", unit: "%",
       labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
       series: [{ name: "load", points: [22, 35, 31, 48, 62, 44, 57] }, { name: "memory", points: [40, 42, 47, 45, 52, 58, 55] }],
-    }, "w", "cyan", "demo-chart");
+    }, "w", "cyan", "demo-chart", true);
   });
   add("clear", "Clear all", () => mgr.closeAll());
 

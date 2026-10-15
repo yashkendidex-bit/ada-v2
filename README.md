@@ -509,6 +509,20 @@ She can put visuals on screen inside and around the orb, like JARVIS in the film
 
 Colour is the orb's teal by default; she can choose any palette name or `#rrggbb`. The dock at the bottom opens a clock, a timer, a showcase and clears the screen; Esc closes the newest widget.
 
+**Look.** Centre dials (clock, timer, gauge, progress, power) share an arc-reactor frame: a segmented outer ring, a fine tick scale, a counter-turning inner ring and a dark core disc that holds the reading. Panels around the orb have no box: a title with a rule, large numbers over small captions, and a thin leader line back to the orb's ring. The orb's core is a dark geodesic mesh with one drifting key light.
+
+**Real data only.** A widget that shows numbers must name the tool that returned them (`source`). The backend checks that tool really ran this session and sends its age; the screen prints `SRC <tool> AGE <n>` under the widget with one of five tags:
+
+| Tag | Meaning |
+|---|---|
+| LIVE | A matching tool returned the numbers within the stale window (120 s by default, 30 min for weather and charts) |
+| STALE | Older than that. The widget dims |
+| UNVERIFIED | The named source matches no tool that ran. Shown in amber so it is never mistaken for measured data |
+| SAMPLE | Dock showcase and the HUD demo. Never real |
+| NO SIGNAL | The source failed (`props.error`). Values are hidden and the reason is shown |
+
+Charts plot only the points a tool returned, and an update with new numbers needs its own `source`, otherwise it turns UNVERIFIED. Clocks, timers, text and scenes measure nothing, so they carry no source line.
+
 ## 📄 License
 
 This project is licensed under the **MIT License**, see the [LICENSE](LICENSE) file.
