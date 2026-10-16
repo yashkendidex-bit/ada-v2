@@ -127,7 +127,7 @@ def test_list_known_voices_names_only(store):
                           "consent_event_ref"} for p in people)
 
 
-# ── 3. identify_turn: cloud gated on env, local is primary ─────────────────
+# ── 3. identify_turn: cloud-only when keyed, MFCC only when keyless ──────
 
 def test_identify_turn_local_without_key(store, monkeypatch):
     monkeypatch.delenv("PYANNOTE_API_KEY", raising=False)
@@ -135,7 +135,20 @@ def test_identify_turn_local_without_key(store, monkeypatch):
     assert label == "visitor"
 
 
-def test_identify_turn_cloud_failure_falls_back_to_local(store, monkeypatch):
+def test_identify_turn_keyed_no_cloud_ids_is_visitor(store, monkeypatch):
+    """Keyed but nobody cloud-enrolled yet: visitor (ask flow drives enrollment)."""
+    monkeypatch.setenv("PYANNOTE_API_KEY", "bogus-key")
+    fp = fingerprint(synth(110.0, seed=1))
+    store.enroll("Yash", fp, owner=True)  # local centroid only, no cloud id
+    label, score = identify_turn(fp, store=store,
+                                 audio_bytes=b"fake-webm", filename="t.webm")
+    assert (label, score) == ("visitor", 0.0)
+
+
+def test_identify_turn_cloud_failure_is_visitor_not_mfcc(store, monkeypatch):
+    """Owner's rule: keyed + cloud transport failure degrades LOUDLY to
+    visitor — it must never silently fall back to MFCC, or key/quota
+    problems would stay hidden."""
     monkeypatch.setenv("PYANNOTE_API_KEY", "bogus-key")
     import httpx
 
@@ -147,9 +160,31 @@ def test_identify_turn_cloud_failure_falls_back_to_local(store, monkeypatch):
         def get(self, *a, **k): raise httpx.ConnectError("no network")
 
     monkeypatch.setattr(httpx, "Client", _Boom)
+    fp = fingerprint(synth(110.0, seed=1))
+    store.enroll("Yash", fp, owner=True)
+    store._conn.execute(
+        "UPDATE voiceprints SET cloud_voiceprint_id='vp_test' WHERE name='Yash'")
+    store._conn.commit()
+    # even though the MFCC centroid matches perfectly, keyed mode ignores it
+    label, score = identify_turn(fp, store=store,
+                                 audio_bytes=b"fake-webm", filename="t.webm")
+    assert (label, score) == ("visitor", 0.0)
+
+
+def test_identify_turn_keyed_without_audio_is_visitor(store, monkeypatch):
+    monkeypatch.setenv("PYANNOTE_API_KEY", "bogus-key")
+    label, _ = identify_turn(fingerprint(synth(110.0, seed=1)), store=store)
+    assert label == "visitor"
+
+
+def test_identify_turn_cloud_success_uses_cloud_label(store, monkeypatch):
+    monkeypatch.setenv("PYANNOTE_API_KEY", "bogus-key")
+    monkeypatch.setattr(
+        speaker_id, "_pyannote_identify_best",
+        lambda *a, **k: ("owner:Yash", 0.93))
     label, score = identify_turn(fingerprint(synth(110.0, seed=1)), store=store,
                                  audio_bytes=b"fake-webm", filename="t.webm")
-    assert label == "visitor"  # local path answered, nothing raised
+    assert (label, score) == ("owner:Yash", 0.93)
 
 
 def test_identify_turn_never_hardcodes_key(store, monkeypatch):

@@ -12,11 +12,15 @@ Design:
   * No raw audio is stored — only L2-normalized MFCC centroids in SQLite.
   * The hyperscalers are EXITING voice biometrics (Azure retired Sep 2025,
     AWS Voice ID end-of-support May 2026), so there is deliberately no
-    dependency on them. The optional cloud path is pyannoteAI, used ONLY
-    when the PYANNOTE_API_KEY env var is set; any cloud failure falls back
-    to the local MFCC path. The local path is primary and authoritative.
-  * The pyannote path is best-effort and has never been exercised against
-    the live API (no key in CI); treat it as an unverified convenience.
+    dependency on them. Identification is CLOUD-ONLY via pyannoteAI whenever
+    the PYANNOTE_API_KEY env var is set (owner's rule: cloud keys only) — a
+    cloud failure degrades loudly to "visitor", never silently to another
+    method, so key/quota problems stay visible instead of being masked.
+  * With no key configured, a keyless MFCC fallback (pure numpy DSP — not a
+    model, zero downloads, nothing leaves the machine) keeps the feature
+    alive; it is a stopgap, not a peer of the cloud path.
+  * The pyannote path has never been exercised against the live API (no key
+    in CI); treat it as unverified until a keyed end-to-end run passes.
 
 Pipeline (sound-sentinel style, research Feature 7):
   loudness normalize -> pre-emphasis -> VAD trim -> fixed 4s window ->
@@ -406,20 +410,24 @@ def identify_turn(pcm=None, *, store: VoiceprintStore,
                   filename: str | None = None) -> tuple[str, float]:
     """One interface for turn identification.
 
-    Cloud (pyannoteAI) only when PYANNOTE_API_KEY is set AND raw audio bytes
-    are available; any cloud failure falls back to the local MFCC path.
-    Never hardcodes keys — the key comes only from the environment.
+    Cloud-only via pyannoteAI when PYANNOTE_API_KEY is set (owner's rule):
+    a cloud failure degrades loudly to "visitor" — never silently to MFCC —
+    so key/quota problems stay visible. With no key, the keyless MFCC
+    fallback (pure DSP, not a model) answers. Never hardcodes keys — the
+    key comes only from the environment.
     """
     key = os.environ.get("PYANNOTE_API_KEY")
-    if key and audio_bytes:
+    if key:
+        if not audio_bytes:
+            return "visitor", 0.0
         try:
             label, score = _pyannote_identify_best(audio_bytes, filename or "",
                                                    store, key)
-            if label:
-                return label, score
+            return (label, score) if label else ("visitor", 0.0)
         except Exception as e:
-            print(f"[SPEAKER] pyannote path failed ({type(e).__name__});"
-                  " using local MFCC")
+            print(f"[SPEAKER] cloud speaker-ID failed ({type(e).__name__}):"
+                  " check PYANNOTE_API_KEY / quota; tagging visitor")
+            return "visitor", 0.0
     if pcm is None:
         return "visitor", 0.0
     fp = fingerprint(pcm)
@@ -617,7 +625,9 @@ class SpeakerManager:
 
     def _maybe_cloud_enroll(self, name: str, centroid: np.ndarray,
                             pending: dict) -> None:
-        """Best-effort pyannote voiceprint creation; local store stays primary."""
+        """pyannote voiceprint creation; the local row stays as the people
+        registry (names, consent refs, owner flags) and as keyless-fallback
+        data. When keyed, identification uses the cloud voiceprint id."""
         key = os.environ.get("PYANNOTE_API_KEY")
         raw = pending.get("raw_audio")
         if not (key and raw):
