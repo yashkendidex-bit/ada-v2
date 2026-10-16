@@ -71,20 +71,31 @@ def test_proactive_ignores_distant_reminders():
     assert eng._reminder_warnings() is None
 
 
-def test_proactive_cooldown_and_rate_limit():
+def test_proactive_cooldown_and_rate_limit(tmp_path):
+    """Feature 8: the old _gate/_hour_stamps timer policy is gone; per-key
+    cooldowns and the rate ceiling now surface as policy decision reasons."""
     async def run():
-        spoken = []
         async def speak(line):
-            spoken.append(line)
             return True
-        eng = make_engine(FakeKernel(), speak, max_per_hour=1)
-        assert eng._gate("k") is True
-        eng._last_fired["k"] = time.time()
-        assert eng._gate("k") is False            # per-key cooldown
-        assert eng._gate("other") is True
-        eng._hour_stamps = [time.time()] * 3      # hour ceiling hit
-        eng._hour_stamps = [time.time(), time.time(), time.time()]
-        assert eng._gate("third") is False
+        eng = ProactiveEngine(FakeKernel(), speak_fn=speak, interval_s=60,
+                              max_per_day=2, db_path=str(tmp_path / "p.db"),
+                              quiet_hours=(0, 0),
+                              voice_turn_active_fn=lambda: False)
+        try:
+            # per-key cooldown: first send clears, immediate repeat suppressed
+            d = await eng._maybe_speak("k", "hello sir", "reminder")
+            assert d is True
+            d2 = eng._decide("k", "reminder", urgent=False)
+            assert d2["action"] == "suppressed"
+            assert d2["reason"] == "cooldown"
+            # daily cap: second distinct key sends, third is capped
+            d_k2 = eng._decide("k2", "reminder_urgent", urgent=False)
+            assert d_k2["action"] == "sent"
+            d3 = eng._decide("k3", "reminder_urgent", urgent=False)
+            assert d3["action"] == "suppressed"
+            assert d3["reason"] == "daily-cap"
+        finally:
+            eng.policy.store.close()
     asyncio.run(run())
 
 

@@ -39,6 +39,12 @@ class ScreenRecall:
             return f"Screen captured but I couldn't read it: {type(e).__name__}"
         caption = (caption or "").strip()[:300] or "unreadable screen"
         self._log(caption)
+        # Timeline (Feature 4): screen event — caption text only, never pixels.
+        try:
+            from perception import emit as _tline_emit
+            _tline_emit("screen", "screen.note", {"caption": caption})
+        except Exception:
+            pass
         if silent:
             return caption
         return f"Right now: {caption}"

@@ -30,8 +30,13 @@ CATALOG = ("HudRoot", "Row", "Column", "Card", "Gauge", "ProgressRing",
            "Button", "LogFeed")
 
 # Actions a HUD button may trigger (frontend→backend). Nothing else runs.
+# Feature 9 adds three: replay one audit decision, undo a reversible action,
+# and flip a per-capability autonomy toggle. Parameters ride the action
+# string as base:param[:param...] (validated backend-side); the frontend
+# allow-list mirrors this set.
 ACTIONS = ("pause_print", "print_progress", "dismiss_hud", "refresh_data",
-           "approve_spec", "run_preflight", "show_scorecard", "show_ledger")
+           "approve_spec", "run_preflight", "show_scorecard", "show_ledger",
+           "replay_decision", "undo_action", "set_autonomy_toggle")
 
 _PROMPT_CATALOG = """HUD CATALOG (the only widgets you may use — pick type+props as JSON, never code):
 HudRoot(title) > Row|Column(children ids) > Card(title, children) |
@@ -43,7 +48,7 @@ SvgCanvas(width,height,elements[{shape:circle|rect|line|path|text + numeric attr
 Viewport3D(objects[{kind:box|cylinder|sphere|line,pos,rot,size,r,color}],explode 0-1,highlight[]) |
 Button(label,action,variant) | LogFeed(lines[max 30]).
 Rules: flat {id:{type,props,children[]}} + root id. Numbers finite. Text ≤300 chars.
-Actions only from [pause_print, print_progress, dismiss_hud, refresh_data, approve_spec, run_preflight, show_scorecard, show_ledger]."""
+Actions only from [pause_print, print_progress, dismiss_hud, refresh_data, approve_spec, run_preflight, show_scorecard, show_ledger, replay_decision, undo_action, set_autonomy_toggle]."""
 
 
 def catalog_prompt() -> str:

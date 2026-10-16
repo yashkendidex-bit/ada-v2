@@ -112,8 +112,15 @@ class DreamRunner:
                     val = val.strip()[:280]
                     if not key or not val:
                         continue
+                    # Feature 6: importance comes from the eval signal, not a
+                    # hardcoded 7. Lessons backed by passing evals (active
+                    # skills with green scores) get high importance + pinning;
+                    # unvalidated lessons stay low and unpinned.
+                    importance, pinned = self._lesson_confidence(
+                        f"{target} {key} {val}")
                     mem.memory.remember_fact(f"{target}_{key}", val,
-                                             importance=7, pinned=True,
+                                             importance=importance,
+                                             pinned=pinned,
                                              source="dream")
                     if not first_lesson:
                         first_lesson = val
@@ -166,6 +173,24 @@ class DreamRunner:
             except Exception as e:
                 print(f"[DREAM] now.md refresh failed: {e}")
         return applied, diary
+
+    def _lesson_confidence(self, lesson_text: str) -> tuple:
+        """(importance, pinned) for one lesson, from the eval signal.
+
+        A lesson that names a skill with passing evals (active + green
+        scores) earns high importance and pinning; shadow/canary backing
+        earns a middle grade; anything unvalidated stays low and unpinned.
+        Falls back to low/unpinned when the gate is unavailable.
+        """
+        try:
+            gate = getattr(getattr(self.kernel, "skills", None),
+                           "eval_gate", None)
+            if gate is None:
+                return 5, False
+            from skill_eval import lesson_confidence
+            return lesson_confidence(gate.registry, lesson_text)
+        except Exception:
+            return 5, False
 
     def _mark_done(self, applied: int):
         self._state["last_dream_ts"] = time.time()

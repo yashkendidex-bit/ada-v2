@@ -737,6 +737,43 @@ class Telemetry:
 
 
 class AuditLog:
+    """Full-fidelity, append-only audit log (Feature 9).
+
+    The audit table is the UNSAMPLED system of record: traces may be sampled
+    and mutated, audit rows never are. Every F0 gate decision writes a full
+    record here: inputs (full tool args, untruncated), the permission-gate
+    evaluation (level x risk x capability), the model lane, a content hash of
+    the decision basis, the output summary once the tool returns, and
+    content-addressed refs (hashes) to the world-model snapshot and the
+    perception-timeline slice at decision time — replay.py re-derives both
+    from those hashes.
+
+    Schema migration: older DBs (6-column audit) are ALTERed in place; no
+    row is ever rewritten or dropped.
+    """
+    # Full-fidelity columns added by the Feature 9 migration, in order.
+    _EXTRA_COLUMNS = (
+        ("session_id", "TEXT"),
+        ("step", "TEXT"),
+        ("tool_args_json", "TEXT"),
+        ("model_lane", "TEXT"),
+        ("tool_version", "TEXT"),
+        ("prompt_hash", "TEXT"),
+        ("output_summary", "TEXT"),
+        ("alternatives_json", "TEXT"),
+        ("trace_id", "TEXT"),
+        ("gate_json", "TEXT"),
+        ("world_hash", "TEXT"),
+        ("timeline_hash", "TEXT"),
+        ("undone", "INTEGER DEFAULT 0"),
+    )
+    #: Hard bound on the human rationale field — raised from 500 (F0) to 4000.
+    DETAIL_MAX = 4000
+    #: Sanity bound on serialized tool args (not a truncation of real calls —
+    #: realistic args are KBs; this only stops pathological bloat).
+    ARGS_MAX = 1_000_000
+    OUTPUT_MAX = 2000
+
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -744,11 +781,85 @@ class AuditLog:
         with self._conn:
             self._conn.execute("CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT,"
                                "ts REAL, actor TEXT, action TEXT, target TEXT, decision TEXT, detail TEXT)")
+            self._migrate()
 
-    def log(self, actor, action, target="", decision="allow", detail=""):
+    def _migrate(self):
+        """Add missing full-fidelity columns; existing rows are untouched."""
+        have = {r["name"] for r in
+                self._conn.execute("PRAGMA table_info(audit)").fetchall()}
+        for name, ctype in self._EXTRA_COLUMNS:
+            if name not in have:
+                self._conn.execute(f"ALTER TABLE audit ADD COLUMN {name} {ctype}")
+
+    def log(self, actor, action, target="", decision="allow", detail="",
+            *, session_id=None, step=None, tool_args=None, model_lane=None,
+            tool_version=None, prompt_hash=None, output_summary=None,
+            alternatives=None, trace_id=None, gate=None,
+            world_hash=None, timeline_hash=None):
+        """Write one audit row. ``tool_args``/``gate``/``alternatives`` accept
+        dicts (serialized to JSON); everything else is a plain value."""
+        def _j(v):
+            if v is None:
+                return None
+            return v if isinstance(v, str) else json.dumps(v, ensure_ascii=True)
+        args_json = _j(tool_args)
+        if args_json is not None and len(args_json) > self.ARGS_MAX:
+            args_json = args_json[:self.ARGS_MAX]
+        out = output_summary
+        if out is not None:
+            out = str(out)[:self.OUTPUT_MAX]
         with self._conn:
-            self._conn.execute("INSERT INTO audit(ts,actor,action,target,decision,detail) VALUES(?,?,?,?,?,?)",
-                               (time.time(), actor, action, target, decision, str(detail)[:500]))
+            cur = self._conn.execute(
+                "INSERT INTO audit(ts,actor,action,target,decision,detail,"
+                "session_id,step,tool_args_json,model_lane,tool_version,"
+                "prompt_hash,output_summary,alternatives_json,trace_id,"
+                "gate_json,world_hash,timeline_hash)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (time.time(), actor, action, target, decision,
+                 str(detail)[:self.DETAIL_MAX],
+                 session_id, step, args_json, model_lane, tool_version,
+                 prompt_hash, out, _j(alternatives), trace_id, _j(gate),
+                 world_hash, timeline_hash))
+            return cur.lastrowid
+
+    def get(self, audit_id):
+        """One full-fidelity record by id, or None."""
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT * FROM audit WHERE id=?", (audit_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_output(self, audit_id, summary):
+        """Fill in the output summary once the tool returns."""
+        if not audit_id:
+            return
+        with self._conn:
+            self._conn.execute(
+                "UPDATE audit SET output_summary=? WHERE id=?",
+                (str(summary or "")[:self.OUTPUT_MAX], audit_id))
+
+    def mark_undone(self, audit_id):
+        with self._conn:
+            self._conn.execute(
+                "UPDATE audit SET undone=1 WHERE id=?", (audit_id,))
+
+    def decisions(self, limit=50, action=None, since=None):
+        """Newest-first audit rows, optionally filtered."""
+        where, args = [], []
+        if action:
+            where.append("action=?")
+            args.append(action)
+        if since is not None:
+            where.append("ts>=?")
+            args.append(float(since))
+        sql = "SELECT * FROM audit"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(int(limit))
+        with self._conn:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
 
     def recent(self, limit=20):
         with self._conn:
@@ -847,7 +958,18 @@ class AgentKernel:
         self.security = Security(db)
         self.telemetry = Telemetry(db)
         self.presence = Presence(on_hud=on_hud)
-        self.forge = ToolForge(self.kernel_dir / "custom_tools")
+        # Feature 2 (MCP-native tool forge): newly forged tools are emitted
+        # as MCP tool-definition modules under ada_kernel/mcp_tools/; the
+        # old in-process exec() path survives only as a deprecated fallback
+        # for already-registered legacy tools (see backend/mcp/forge.py).
+        try:
+            from mcp.forge import MCPForge
+            self.forge = MCPForge(self.kernel_dir / "custom_tools",
+                                  self.kernel_dir / "mcp_tools")
+        except Exception as e:
+            print(f"[KERNEL] [FORGE] MCP forge unavailable ({e}); "
+                  f"falling back to legacy ToolForge")
+            self.forge = ToolForge(self.kernel_dir / "custom_tools")
         self.scheduler = Scheduler(db, on_fire=on_fire or (lambda item: None))
         self.watch = WatchFolder(on_change=self._watch_change)
         self.watch_rules = []  # [{folder, match, action}] — "when X lands, do Y"
@@ -996,12 +1118,25 @@ class AgentKernel:
         return "\n\n".join(p for p in ctx if p)
 
     # --- unified new-tool dispatch ----------------------------------------
-    async def handle_tool(self, name, args, permissions=None, default_perm=True):
+    async def handle_tool(self, name, args, permissions=None, default_perm=True,
+                    tool_version=None):
         args = dict(args or {})
         security = self.security
         if not security.check_permission(name, permissions or {}, default=default_perm):
             return {"result": f"Tool '{name}' not permitted."}
-        security.audit.log("kernel", "tool", name, "allow", json.dumps(args)[:300])
+        # Audit row carries the tool version (Feature 2, Option A annotations:
+        # logged on every call into the audit log).
+        detail = json.dumps(args)[:300]
+        if tool_version:
+            detail = f"[tool_version={tool_version}] " + detail
+        security.audit.log("kernel", "tool", name, "allow", detail)
+        # Timeline (Feature 4): tool-call metadata only (name + decision),
+        # never full payloads — full-fidelity audit is a later feature.
+        try:
+            from perception import emit as _tline_emit
+            _tline_emit("tool", "tool.call", {"tool": name, "decision": "allow"})
+        except Exception:
+            pass
 
         try:
             if name == "remember":
@@ -1261,7 +1396,16 @@ class AgentKernel:
                     return {"result": "Observation tiers not wired yet."}
                 useful = str(args.get("useful", "yes")).lower() in (
                     "yes", "true", "1", "helpful", "helped")
-                return {"result": obs.vote(useful)}
+                result = obs.vote(useful)
+                # Feature 8: a vote on her last unprompted line is a
+                # proactivity reaction — feed the interruption log.
+                try:
+                    pro = getattr(self, "proactive_engine", None)
+                    if pro is not None:
+                        pro.record_feedback("engaged" if useful else "dismissed")
+                except Exception:
+                    pass
+                return {"result": result}
             if name == "observe_status":
                 obs = getattr(self, "observe", None)
                 if obs is None:
@@ -1326,6 +1470,22 @@ class AgentKernel:
                     return {"result": aut.set_level(int(args.get("level", 1)))}
                 return {"result": aut.status()}
             if name == "run_custom_tool":
+                # Feature 6: route through the eval gate's shadow/canary
+                # router when a gated skill is involved; legacy and ungated
+                # tools take the direct forge path as before.
+                try:
+                    gate = getattr(getattr(self, "skills", None),
+                                   "eval_gate", None)
+                    if gate is not None and gate.forge is None:
+                        gate.attach_forge(self.forge)
+                except Exception:
+                    gate = None
+                if gate is not None:
+                    try:
+                        return {"result": await gate._serve_async(
+                            args.get("name", ""), args.get("args", {}), 30)}
+                    except Exception:
+                        pass
                 return {"result": await self.forge.run(args.get("name", ""), args.get("args", {}))}
             if name == "create_custom_tool":
                 return {"result": self.forge.synthesise(args.get("name", ""), args.get("code", ""))}
@@ -1367,6 +1527,14 @@ class AgentKernel:
             return {"result": f"Unknown kernel tool '{name}'."}
         except Exception as e:
             self.security.audit.log("kernel", "tool", name, "error", str(e)[:300])
+            # Timeline (Feature 4): metadata only.
+            try:
+                from perception import emit as _tline_emit
+                _tline_emit("tool", "tool.call",
+                            {"tool": name, "decision": "error",
+                             "error": str(e)[:150]})
+            except Exception:
+                pass
             return {"result": f"Tool '{name}' failed: {e}"}
 
     async def _dream_and_announce(self, dreamer):

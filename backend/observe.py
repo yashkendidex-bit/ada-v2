@@ -62,12 +62,31 @@ class ObserveTiers:
         self._state["useful_streak"] = 0
         self._state["useless_streak"] = 0
         self._save()
+        # Timeline (Feature 4): retention follows the tier. Tier 0 stops DB
+        # writes entirely (ring only); safe no-op when uninitialized.
+        try:
+            from perception import set_retention_tier
+            set_retention_tier(tier)
+        except Exception:
+            pass
         names = {0: "OFF — blind by choice", 1: "CAPTIONS — task one-liners only",
                  2: "DETAIL — window titles + selected text on your explicit ask"}
         return f"Observation {names[tier]} (set by {by})."
 
-    def vote(self, useful: bool) -> str:
-        """Record whether her last watched suggestion helped."""
+    def vote(self, useful: bool, skill: str | None = None) -> str:
+        """Record whether her last watched suggestion helped.
+
+        Pass skill=<name> to also record a per-skill quality vote — those
+        streaks feed the canary auto-rollback signal (Feature 6): sustained
+        useless votes on a canary skill demote it back to shadow.
+        """
+        reply = self._tier_vote(useful)
+        if skill:
+            skill_reply = self.skill_vote(skill, useful)
+            reply = f"{reply} {skill_reply}".strip()
+        return reply
+
+    def _tier_vote(self, useful: bool) -> str:
         self._state["votes"] = int(self._state.get("votes", 0)) + 1
         if useful:
             self._state["useful_streak"] = int(self._state.get("useful_streak", 0)) + 1
@@ -76,6 +95,11 @@ class ObserveTiers:
                 self._state["tier"] = 1
                 self._state["useful_streak"] = 0
                 self._save()
+                try:
+                    from perception import set_retention_tier
+                    set_retention_tier(1)
+                except Exception:
+                    pass
                 return ("Three helps in a row — stepping back up to CAPTIONS. "
                         "Say 'watch less' any time.")
         else:
@@ -85,10 +109,64 @@ class ObserveTiers:
                 self._state["tier"] = self.tier - 1
                 self._state["useless_streak"] = 0
                 self._save()
+                try:
+                    from perception import set_retention_tier
+                    set_retention_tier(self.tier)
+                except Exception:
+                    pass
                 return ("Heard — watching less closely now. Say 'watch more' "
                         "when you want me closer.")
         self._save()
         return "Noted."
+
+    # ── per-skill quality (Feature 6: canary auto-rollback signal) ────────────
+    USELESS_DEMOTE_AFTER = 3
+
+    def _skill_row(self, name: str) -> dict:
+        q = self._state.setdefault("skill_quality", {})
+        row = q.setdefault(name, {"useful_streak": 0, "useless_streak": 0,
+                                  "votes": 0, "demote_flag": False})
+        return row
+
+    def skill_vote(self, name: str, useful: bool) -> str:
+        """Per-skill quality vote. 3 straight useless votes arm the demote
+        signal that the eval gate's canary health check consumes."""
+        row = self._skill_row(name)
+        row["votes"] = int(row.get("votes", 0)) + 1
+        if useful:
+            row["useful_streak"] = int(row.get("useful_streak", 0)) + 1
+            row["useless_streak"] = 0
+            row["demote_flag"] = False
+            self._save()
+            return f"Noted — '{name}' helped."
+        row["useless_streak"] = int(row.get("useless_streak", 0)) + 1
+        row["useful_streak"] = 0
+        self._save()
+        if row["useless_streak"] >= self.USELESS_DEMOTE_AFTER:
+            row["demote_flag"] = True
+            self._save()
+            return (f"Noted — '{name}' hasn't helped {row['useless_streak']} "
+                    f"times running. I'll pull it back from canary.")
+        return f"Noted — '{name}' wasn't useful this time."
+
+    def skill_signal(self, name: str) -> str:
+        """'demote' when sustained useless votes warrant pulling the skill
+        back; 'ok' otherwise. Consumed by SkillEvalGate.maybe_promote_canary."""
+        row = self._skill_row(name)
+        return "demote" if row.get("demote_flag") else "ok"
+
+    def skill_signal_ack(self, name: str):
+        """Clear the demote flag after the gate has acted on it."""
+        row = self._skill_row(name)
+        row["demote_flag"] = False
+        row["useless_streak"] = 0
+        self._save()
+
+    def skill_quality_status(self, name: str) -> str:
+        row = self._skill_row(name)
+        return (f"'{name}': {row['votes']} votes, "
+                f"useful x{row['useful_streak']}, useless x{row['useless_streak']}, "
+                f"signal={self.skill_signal(name)}")
 
     @staticmethod
     def proof(saw: str, suggest: str) -> str:

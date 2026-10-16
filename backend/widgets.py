@@ -44,7 +44,7 @@ MAX_TTL = 3600
 KINDS = (
     "clock", "timer", "gauge", "progress", "power", "tile", "list", "table",
     "chart", "text", "weather", "notification", "status", "steps", "connect",
-    "radar", "waveform", "model3d", "image", "hud", "scene", "code",
+    "radar", "waveform", "model3d", "image", "hud", "trust_console", "scene", "code",
 )
 # Kinds that sit inside the orb by default; the others open around it.
 INNER_KINDS = ("clock", "timer", "gauge", "progress", "power", "tile",
@@ -67,6 +67,7 @@ _REQUIRED = {
     "text": ("body",), "weather": ("temp",), "notification": ("title",),
     "status": ("items",), "steps": ("steps",), "model3d": ("objects",),
     "image": ("src",), "hud": ("nodes",), "scene": ("elements",), "code": ("html",),
+    "trust_console": ("decisions",),
 }
 
 CATALOG_PROMPT = """WIDGETS — you can put anything on Sir's screen, inside or around the orb.
@@ -80,6 +81,8 @@ Use show_widget(kind, props JSON, slot, color). Pick by what the answer IS:
  connect{label,sub}  radar{label,blips[{angle 0-360,dist 0-1,label}]}  waveform{label}
  model3d{title,objects[{kind box|cylinder|sphere|line,pos[x,y,z],rot,size,r,color}],spin,explode 0-1}
  image{title,src data:image URL,caption}  hud{title,root,nodes} (the HUD catalog)
+ trust_console{decisions[{id,ts,tool,capability,decision,verdict,risk,reason,reversible,undone}],toggles[{capability,mode}],restraint{sent,suppressed},voiceprints{people[{name,role,enrolled}],retention},summary{}}
+ (the trust console — decision feed, autonomy toggles, restraint; open it with the show_trust_console tool, never hand-build its props)
 Slots: inner (inside the orb: clock, gauge, tile, progress, power, connect, radar, model3d),
  or n ne e se s sw w nw (around it: lists, tables, charts, text, weather). Omit slot and it picks.
 Colour: teal (default, the orb's own), cyan, blue, amber, red, green, violet, white, or "#rrggbb".

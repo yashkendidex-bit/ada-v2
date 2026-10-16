@@ -345,3 +345,32 @@
 
 @keyframes wd-spin { to { transform: rotate(360deg); } }
 @keyframes wd-drop { 0% { transform: translateY(-4px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(8px); opacity: 0; } }
+
+/* ── trust console ───────────────────────────────────────────────────── */
+
+.wtc .wp-body { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow: hidden; }
+.wtc-sum { font-size: 12px; color: var(--c2); letter-spacing: 0.04em; }
+.wtc-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.wtc-feed { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 60px; }
+.wtc-row { display: flex; gap: 8px; align-items: flex-start; padding: 5px 6px; border: 1px solid rgba(var(--rgb), 0.14); }
+.wtc-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; background: var(--cd); }
+.wtc-dot.ok { background: #4ade80; }
+.wtc-dot.warn { background: #ffb43f; }
+.wtc-dot.bad { background: #ff5a5a; }
+.wtc-main { flex: 1; min-width: 0; }
+.wtc-top { display: flex; justify-content: space-between; gap: 8px; }
+.wtc-tool { font-size: 12px; color: var(--c2); }
+.wtc-time { font-size: 10px; color: var(--c); opacity: 0.7; }
+.wtc-sub { font-size: 11px; color: var(--c); opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wtc-acts { display: flex; gap: 4px; flex: none; }
+.wtc-btn { padding: 3px 10px; border: 1px solid rgba(var(--rgb), 0.4); background: rgba(var(--rgb), 0.08); color: var(--c2); font: 500 10px var(--wd-font); letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
+.wtc-btn:hover { background: rgba(var(--rgb), 0.22); }
+.wtc-btn.warn { border-color: rgba(255, 180, 63, 0.55); color: #ffcf8a; }
+.wtc-btn.chip.on, .wtc-btn.on { background: rgba(var(--rgb), 0.28); color: #eafffd; }
+.wtc-none { font-size: 11px; color: var(--c); opacity: 0.6; padding: 6px; }
+.wtc-sec { font-size: 10px; letter-spacing: 0.18em; color: var(--c); opacity: 0.8; margin-top: 2px; }
+.wtc-trow { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
+.wtc-tcap { font-size: 12px; color: var(--c2); }
+.wtc-seg { display: flex; gap: 4px; align-items: center; }
+.wtc-ladder { font-size: 10px; color: var(--c); opacity: 0.6; margin-right: 4px; }
+.wtc-why { font-size: 11px; color: var(--c); opacity: 0.85; }

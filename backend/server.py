@@ -14,6 +14,7 @@ from fastapi import UploadFile, File
 from fastapi.responses import JSONResponse
 import asyncio
 import threading
+import time
 import sys
 import os
 import json
@@ -69,6 +70,92 @@ app_socketio = socketio.ASGIApp(sio, app)
 
 import providers
 
+# --- Runtime OS (Feature 1): control plane ---------------------------------
+# The registry/supervisor/bus are built around the AudioLoop once it exists
+# (see build_runtime, called from start_audio). Subsystems are wrapped in
+# thin adapters — their internals are untouched.
+from runtime.bus import EventBus
+from runtime.services import ServiceRegistry
+from runtime.supervisor import Supervisor
+from runtime.adapters import (
+    SchedulerService, WatchFolderService, ProactiveService, DossierService,
+    WellbeingService, VisionService, DreamService, SkillLoopService,
+    MCPServerService,
+)
+from runtime.policy import PolicyService
+from runtime.fallbacks import FallbackService
+
+runtime_bus = None
+runtime_registry = None
+runtime_supervisor = None
+
+
+def build_runtime(audio_loop):
+    """Build the control plane around a constructed AudioLoop.
+
+    Registers Scheduler, WatchFolder, ProactiveEngine, DreamRunner, SkillLoop,
+    OvernightDossier, WellbeingMonitor, AmbientVision as supervised services,
+    plus the PolicyService (thin adapter over the Feature-0 gate) and the
+    fallback translator. Safe to call once; rebuilds are refused.
+    """
+    global runtime_bus, runtime_registry, runtime_supervisor
+    if runtime_supervisor is not None:
+        return runtime_supervisor
+    from pathlib import Path
+    kdir = Path(audio_loop.kernel.kernel_dir)
+    bus = EventBus(kdir / "runtime_events.db")
+    reg = ServiceRegistry()
+    sup = Supervisor(reg, bus, tick_s=10.0)
+    K = audio_loop.kernel
+    reg.register(SchedulerService(K.scheduler))
+    reg.register(WatchFolderService(K.watch))
+    if getattr(audio_loop, "proactive", None) is not None:
+        reg.register(ProactiveService(audio_loop.proactive))
+    if getattr(K, "dreamer", None) is not None:
+        reg.register(DreamService(K.dreamer))
+    if getattr(K, "skills", None) is not None:
+        reg.register(SkillLoopService(K.skills))
+    if getattr(K, "dossier", None) is not None:
+        reg.register(DossierService(K.dossier))
+    if getattr(audio_loop, "wellbeing", None) is not None:
+        reg.register(WellbeingService(audio_loop.wellbeing))
+    if getattr(audio_loop, "vision", None) is not None:
+        reg.register(VisionService(audio_loop.vision))
+    policy = PolicyService(audio_loop)
+    audio_loop.policy = policy  # convenience handle; the F0 gate itself is untouched
+    reg.register(policy)
+    # Feature 2: local MCP tool server (Streamable HTTP on 127.0.0.1 +
+    # hot-load watcher) as a supervised service. Reuses the AudioLoop's
+    # single shared server instance so dispatch and HTTP serve one catalog.
+    # GET /health covers it automatically via the supervisor health payload.
+    try:
+        mcp_server = audio_loop._ensure_mcp_server()
+        reg.register(MCPServerService(K, server=mcp_server))
+    except Exception as e:
+        print(f"[RUNTIME] MCP tool service skipped: {e}")
+    reg.register(FallbackService(bus, snapshot_fn=sup.snapshot))
+    runtime_bus, runtime_registry, runtime_supervisor = bus, reg, sup
+    print(f"[RUNTIME] control plane built: {reg.names()}")
+    return sup
+
+
+async def start_runtime():
+    if runtime_supervisor is not None:
+        await runtime_supervisor.start_all()
+
+
+async def stop_runtime():
+    global runtime_bus, runtime_registry, runtime_supervisor
+    try:
+        if runtime_supervisor is not None:
+            await runtime_supervisor.stop_all()
+    finally:
+        try:
+            if runtime_bus is not None:
+                await runtime_bus.close()
+        finally:
+            runtime_bus = runtime_registry = runtime_supervisor = None
+
 
 @app.post("/stt")
 async def stt(file: UploadFile = File(...)):
@@ -78,7 +165,32 @@ async def stt(file: UploadFile = File(...)):
         if not data:
             return JSONResponse(status_code=400, content={"error": "empty audio"})
         text = await providers.transcribe_audio(data, filename=file.filename or "audio.webm")
-        return {"text": text}
+        # Speaker ID (Feature 7): fingerprint the turn audio and tag the turn.
+        # Never silent-enrolls: an unknown voice raises a voice_ask the client
+        # SPEAKS (voice-direct, no popup); the answer turn enrolls.
+        speaker_label, speaker_score, voice_ask = "visitor", 0.0, None
+        try:
+            from speaker_id import get_manager
+            sp = get_manager().process_turn(data, file.filename or "audio.webm",
+                                            transcript_text=text)
+            speaker_label = sp.get("speaker_label", "visitor")
+            speaker_score = float(sp.get("speaker_score", 0.0) or 0.0)
+            voice_ask = sp.get("voice_ask")
+        except Exception as e:
+            print(f"[STT] speaker-id skipped: {type(e).__name__}: {str(e)[:120]}")
+        # Timeline (Feature 4): voice event — transcript text only, never audio.
+        try:
+            from perception import emit as _tline_emit
+            _tline_emit("voice", "voice.turn", {"text": (text or "")[:2000],
+                                                "speaker": speaker_label})
+        except Exception:
+            pass
+        resp = {"text": text, "speaker": speaker_label, "speaker_score": speaker_score}
+        if voice_ask:
+            # Contract: client SPEAKS this line, then routes the answer turn
+            # through /stt again (SpeakerManager detects the pending ask).
+            resp["voice_ask"] = voice_ask
+        return resp
     except Exception as e:
         print(f"[STT] Transcription failed: {type(e).__name__}: {str(e)[:150]}")
         return JSONResponse(status_code=500, content={"error": str(e)[:200]})
@@ -201,6 +313,17 @@ async def status():
     except Exception:
         pass
     return out
+
+@app.get("/health")
+async def health():
+    """Runtime OS health (Feature 1): per-service status as JSON."""
+    if runtime_supervisor is None:
+        return JSONResponse(status_code=503,
+                            content={"status": "not-started", "services": {}})
+    code, body = runtime_supervisor.health_payload()
+    if code != 200:
+        return JSONResponse(status_code=code, content=body)
+    return body
 
 @app.post("/chat")
 async def chat(data: dict):
@@ -434,6 +557,20 @@ async def disconnect(sid):
     print(f"Client disconnected: {sid}")
 
 @sio.event
+async def hush(sid, data=None):
+    """Frontend hush button / 'not now': the last proactive line was a
+    dismissal, and no new interjections for 30 minutes. Feature 8."""
+    try:
+        eng = getattr(audio_loop, "proactive", None)
+        if eng is not None:
+            eng.on_hush()
+            await sio.emit('status',
+                           {'msg': 'Understood — quiet for a while, Sir.'},
+                           room=sid)
+    except Exception as e:
+        print(f"[SERVER] hush failed: {e}")
+
+@sio.event
 async def start_audio(sid, data=None):
     global audio_loop, loop_task
     
@@ -497,43 +634,128 @@ async def start_audio(sid, data=None):
 
     @sio.event
     async def hud_action(sid, data):
-        """HUD button press → allowlisted backend action. Nothing else runs."""
+        """HUD button press → allowlisted backend action. Nothing else runs.
+
+        Feature 9 actions carry parameters as base:param[:param...] — every
+        segment is validated against a safe alphabet before use.
+        """
         from hud_spec import ACTIONS
-        action = (data or {}).get("action", "")
-        if action not in ACTIONS:
-            print(f"[HUD] blocked action: {action}")
+        import re as _re
+        raw = str((data or {}).get("action", ""))
+        parts = raw.split(":")
+        base = parts[0]
+        params = parts[1:]
+        _SAFE = _re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+        if base not in ACTIONS or not all(_SAFE.match(p) for p in params):
+            print(f"[HUD] blocked action: {raw}")
             return
-        print(f"[HUD] action: {action}")
+        print(f"[HUD] action: {raw}")
         if audio_loop is None:
             return
         try:
-            if action == "dismiss_hud":
+            if base == "dismiss_hud":
                 return  # frontend already removed it; nothing to do
-            if action == "pause_print":
+            if base == "replay_decision":
+                # Feature 9: show what she knew for one audit decision.
+                from replay import inspect as _replay_inspect
+                import widgets as _w
+                try:
+                    audit_id = int(params[0]) if params else 0
+                except Exception:
+                    audit_id = 0
+                if not audit_id:
+                    return
+                root = audio_loop.kernel.root_dir / "ada_kernel"
+                b = _replay_inspect(audit_id, root / "ada.db",
+                                    timeline_db=root / "ada_events.db",
+                                    world_db=root / "world.db")
+                if b.get("ok"):
+                    msg, _ = _w.build_open(
+                        "text", {"title": f"Replay #{audit_id}",
+                                 "body": b["narrative"][:2000]},
+                        slot="e", color="cyan", wid=f"replay-{audit_id}")
+                    if msg:
+                        await sio.emit("widget", msg)
+                    await audio_loop._notify_model(
+                        "HUD action. Speak briefly: "
+                        f"replaying decision {audit_id} — {b['decision']} on "
+                        f"{b['tool']}. {b['gate'].get('reason', '')[:160]}")
+                else:
+                    await audio_loop._notify_model(
+                        "HUD action. Speak briefly: "
+                        f"no audit record {audit_id}, Sir.")
+                return
+            if base == "undo_action":
+                # Feature 9: one-click undo of a reversible action.
+                from replay import undo_record, default_undo_handlers
+                try:
+                    audit_id = int(params[0]) if params else 0
+                except Exception:
+                    audit_id = 0
+                if not audit_id:
+                    return
+                root = audio_loop.kernel.root_dir / "ada_kernel"
+                res = undo_record(audit_id, root / "ada.db",
+                                  default_undo_handlers(audio_loop.kernel))
+                if res.get("ok"):
+                    line = f"undone, Sir — {res.get('result', '')}"[:300]
+                else:
+                    line = f"cannot undo: {res.get('reason', 'unknown')}"[:300]
+                await audio_loop._notify_model(
+                    f"HUD action. Speak briefly: {line}")
+                return
+            if base == "set_autonomy_toggle":
+                # Feature 9: per-capability ask-first/act toggle.
+                if len(params) < 2:
+                    return
+                aut = getattr(audio_loop.kernel, "autonomy", None)
+                if aut is None:
+                    await audio_loop._notify_model(
+                        "HUD action. Speak briefly: autonomy is not wired, Sir.")
+                    return
+                line = aut.set_capability_mode(params[0], params[1])
+                # Refresh the console so the toggle state is visible at once.
+                try:
+                    from replay import console_snapshot
+                    import widgets as _w
+                    root = audio_loop.kernel.root_dir / "ada_kernel"
+                    props = console_snapshot(root / "ada.db",
+                                             timeline_db=root / "ada_events.db",
+                                             autonomy=aut,
+                                             voiceprint_db=root / "voiceprints.db")
+                    msg, _ = _w.build_update("trust-console", props)
+                    if msg:
+                        await sio.emit("widget", msg)
+                except Exception:
+                    pass
+                await audio_loop._notify_model(
+                    f"HUD action. Speak briefly: {line}"[:300])
+                return
+            if base == "pause_print":
                 prt = getattr(audio_loop.kernel, "printer", None)
                 res = prt.pause() if prt else "Printer not wired."
                 await audio_loop._notify_model(f"HUD action. Speak briefly: {res}")
-            elif action == "print_progress":
+            elif base == "print_progress":
                 prt = getattr(audio_loop.kernel, "printer", None)
                 res = prt.progress() if prt else "Printer not wired."
                 await audio_loop._notify_model(f"HUD action. Speak briefly: {res}")
-            elif action == "run_preflight":
+            elif base == "run_preflight":
                 res = await audio_loop._execute_tool(
                     "preflight", {"stl_path": audio_loop._latest_stl() or ""})
                 await audio_loop._notify_model(
                     f"HUD action. Speak briefly: {(res or {}).get('result', '')[:300]}")
-            elif action == "show_scorecard":
+            elif base == "show_scorecard":
                 res = await audio_loop._execute_tool("scorecard", {})
                 await audio_loop._notify_model(
                     f"HUD action. Speak briefly: {(res or {}).get('result', '')[:300]}")
-            elif action == "show_ledger":
+            elif base == "show_ledger":
                 res = await audio_loop._execute_tool("cost_ledger", {})
                 await audio_loop._notify_model(
                     f"HUD action. Speak briefly: {(res or {}).get('result', '')[:300]}")
-            elif action == "approve_spec":
+            elif base == "approve_spec":
                 await audio_loop._notify_model(
                     "HUD action. Speak briefly: intent approved, Sir — say 'print it' when ready for plastic.")
-            elif action == "refresh_data":
+            elif base == "refresh_data":
                 await audio_loop._notify_model(
                     "HUD action. Speak briefly: refreshed, Sir.")
         except Exception as e:
@@ -646,6 +868,18 @@ async def start_audio(sid, data=None):
         # frontend-only concern, so ADA always replies (typed or spoken).
 
         print("Creating asyncio task for AudioLoop.run()")
+
+        # Runtime OS (F1): register subsystems as supervised services and start
+        # them via the supervisor. Adapter starts are idempotent, so the
+        # start_background()/proactive.start()/... calls inside AudioLoop.run()
+        # simply no-op against the already-running services.
+        try:
+            build_runtime(audio_loop)
+            await start_runtime()
+        except Exception as e:
+            print(f"[RUNTIME] supervisor boot failed ({type(e).__name__}: {e}); "
+                  "continuing without supervision.")
+
         loop_task = asyncio.create_task(audio_loop.run())
         
         # Add a done callback to catch silent failures in the loop
@@ -747,7 +981,13 @@ async def shutdown(sid, data=None):
     if authenticator:
         print("[SERVER] Stopping Authenticator...")
         authenticator.stop()
-    
+
+    # Stop the runtime control plane (reverse-order service shutdown)
+    try:
+        await stop_runtime()
+    except Exception as e:
+        print(f"[SERVER] runtime stop failed: {type(e).__name__}: {e}")
+
     print("[SERVER] Graceful shutdown complete. Terminating process...")
     
     # Force exit immediately - os._exit bypasses cleanup but ensures termination
@@ -787,6 +1027,25 @@ from pathlib import Path
 
 # ... (imports)
 
+_frame_seen_last = 0.0  # throttle for timeline notes (max 1/30s)
+
+
+def _note_frame_seen(image_data):
+    """Timeline note for camera frames — text descriptor only, no pixels."""
+    global _frame_seen_last
+    now = time.time()
+    if now - _frame_seen_last < 30.0:
+        return
+    _frame_seen_last = now
+    try:
+        n = len(image_data) if isinstance(image_data, (bytes, str)) else 0
+        from perception import emit as _tline_emit
+        _tline_emit("screen", "screen.frame_desc",
+                    {"desc": f"camera frame received ({n} bytes, no pixels stored)"})
+    except Exception:
+        pass
+
+
 @sio.event
 async def video_frame(sid, data):
     # data should contain 'image' which is binary (blob) or base64 encoded
@@ -795,6 +1054,7 @@ async def video_frame(sid, data):
         # We don't await this because we don't want to block the socket handler
         # But send_frame is async, so we create a task
         asyncio.create_task(audio_loop.send_frame(image_data))
+    _note_frame_seen(image_data)
 
 @sio.event
 async def save_memory(sid, data):

@@ -58,3 +58,66 @@ def daily(root_dir: str | Path, hours: int = 24) -> str:
             f"{tools} tool calls. Lanes: {lane_s}. Slowest turn {slow / 1000:.0f}s. "
             f"Spent $0.00 — everything runs on free tiers. "
             f"(Elsewhere-equivalent ≈ ${floor:.2f} at commodity rates, estimated.)")
+
+
+def weekly_trust(root_dir: str | Path, days: int = 7) -> str:
+    """Spoken weekly trust summary (Feature 9): decisions made, confirmations
+    asked, suggestions suppressed, actions undone. Reads the audit log +
+    the F8 policy.decision timeline — plain numbers, no estimates."""
+    from replay import restraint_summary
+    kdir = Path(root_dir) / "ada_kernel"
+    adb = kdir / "ada.db"
+    if not adb.exists():
+        return "No trust ledger yet — talk to me first, Sir."
+    cutoff = time.time() - days * 86400
+    try:
+        conn = sqlite3.connect(f"file:{adb}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT decision, gate_json, undone FROM audit "
+            "WHERE action='tool-gate' AND ts >= ?", (cutoff,)).fetchall()
+        undone = conn.execute(
+            "SELECT COUNT(*) AS n FROM audit WHERE undone=1 AND ts >= ?",
+            (cutoff,)).fetchone()["n"]
+        conn.close()
+    except Exception as e:
+        return f"Trust ledger unreadable: {type(e).__name__}"
+    decisions = len(rows)
+    asked = denied = 0
+    for r in rows:
+        if r["decision"] == "denied":
+            denied += 1
+        try:
+            import json as _j
+            g = _j.loads(r["gate_json"]) if r["gate_json"] else {}
+            if g.get("verdict") == "voice-ask" or g.get("needs_voice"):
+                asked += 1
+        except Exception:
+            pass
+    rest = restraint_summary(kdir / "ada_events.db", hours=days * 24)
+    supp = rest.get("suppressed", 0) if not rest.get("unavailable") else 0
+    bits = [f"{decisions} decisions"]
+    if asked:
+        bits.append(f"{asked} confirmations asked")
+    if denied:
+        bits.append(f"{denied} denied by you")
+    if supp:
+        bits.append(f"{supp} suggestions held back")
+    if undone:
+        bits.append(f"{undone} undone")
+    return ("This week: " + ", ".join(bits) + ". "
+            "Every one of them is in the audit log, Sir — replay any of them "
+            "from the trust console.")
+
+
+def _cli():
+    import sys as _s
+    root = _s.argv[1] if len(_s.argv) > 1 else "."
+    if len(_s.argv) > 2 and _s.argv[2] == "trust":
+        print(weekly_trust(root))
+    else:
+        print(daily(root))
+
+
+if __name__ == "__main__":
+    _cli()

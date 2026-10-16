@@ -126,22 +126,44 @@ def test_proactive_overdue_escalates_once():
     assert eng._reminder_overdue() is None  # never nags twice
 
 
-def test_proactive_urgent_bypasses_hourly_ceiling_once():
+def test_proactive_urgent_bypasses_daily_cap_once(tmp_path):
+    """Feature 8: the urgent bypass now runs through the learned policy —
+    it skips the daily cap/quiet hours/cooldowns exactly once per key
+    (never the voice-turn rail), then the normal policy resumes."""
     async def run():
         spoken = []
 
         async def speak(line):
             spoken.append(line)
             return True
-        eng = ProactiveEngine(
+        import proactive as _p
+        eng = _p.ProactiveEngine(
             FakeKernel(FakeScheduler([
                 {"id": "rx", "descr": "Medication", "next_run": time.time() + 60},
-            ])), speak_fn=speak, interval_s=60, max_per_hour=1)
-        eng._hour_stamps = [time.time()]  # ceiling already hit
-        key, line = eng._reminder_warnings()
-        assert eng._gate(key, urgent=eng._urgent_bypass_available(key)) is True
-        # second urgent for the same reminder: bypass spent
-        assert eng._gate(key, urgent=eng._urgent_bypass_available(key)) is False
+            ])), speak_fn=speak, interval_s=60, max_per_day=0,
+            db_path=str(tmp_path / "p.db"), quiet_hours=(0, 0),
+            voice_turn_active_fn=lambda: False)
+        try:
+            key, line = eng._reminder_warnings()
+            assert key == "reminder_rx"
+            # daily cap is 0 — a non-urgent line would be suppressed...
+            d = eng._decide(key, "reminder", urgent=False)
+            assert d["action"] == "suppressed" and d["reason"] == "daily-cap"
+            # ...but the urgent bypass whispers through once.
+            spoke = await eng._maybe_speak(key, line, "reminder")
+            assert spoke is True
+            assert spoken and "Medication" in spoken[0]
+            # second urgent for the same reminder: bypass spent -> cooldown.
+            d2 = eng._decide(key, "reminder", urgent=True)
+            assert d2["action"] == "suppressed"
+            assert d2["reason"] == "cooldown"
+            # hard rail still wins: never interrupt an active voice turn.
+            eng._voice_turn_active_fn = lambda: True
+            d3 = eng._decide("reminder_rx2", "reminder", urgent=True)
+            assert d3["action"] == "suppressed"
+            assert d3["reason"] == "voice-turn-active"
+        finally:
+            eng.policy.store.close()
     asyncio.run(run())
 
 

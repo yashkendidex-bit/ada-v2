@@ -27,11 +27,21 @@ export interface ManagerOptions {
   onAction(action: string): void;
 }
 
-/** Same list as backend/hud_spec.ACTIONS. Anything else a widget asks for goes nowhere. */
-const ACTIONS = new Set([
+/** Same list as backend/hud_spec.ACTIONS. Anything else a widget asks for goes nowhere.
+ * Feature 9 actions carry parameters as base:param[:param...]; every segment
+ * is validated here (and again backend-side) before it leaves the widget. */
+const ACTION_BASES = new Set([
   "pause_print", "print_progress", "dismiss_hud", "refresh_data", "approve_spec",
   "run_preflight", "show_scorecard", "show_ledger",
+  "replay_decision", "undo_action", "set_autonomy_toggle",
 ]);
+const PARAM_OK = /^[A-Za-z0-9_-]{1,64}$/;
+
+function actionAllowed(name: string): boolean {
+  const parts = String(name).split(":");
+  if (!ACTION_BASES.has(parts[0])) return false;
+  return parts.slice(1).every((p) => PARAM_OK.test(p));
+}
 
 const MAX_AROUND = 3;
 const MARGIN = 16;
@@ -176,7 +186,7 @@ export class WidgetManager {
     const pal = resolvePalette(color);
     const env: WidgetEnv = {
       pal, calm: this.calm,
-      action: (n) => { if (ACTIONS.has(n)) this.opts.onAction(n); },
+      action: (n) => { if (actionAllowed(n)) this.opts.onAction(n); },
       close: () => this.close(id),
     };
     let inst: WidgetInstance;

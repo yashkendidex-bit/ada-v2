@@ -19,17 +19,17 @@ def make_autonomy():
     return AutonomyLevels(tempfile.mkdtemp())
 
 
-# ── autonomy ritual (FULL-AUTO directive 2026-09-30: no UI gates, voice-direct) ──
+# ── autonomy ritual (F0: real gates — the full-auto directive is gone) ──
 def test_default_is_standard_and_gating():
     a = make_autonomy()
-    assert a.level == 3  # full-auto default
-    assert a.allows_background_tool("run_web_agent") is True
-    assert a.allows_autonomous_destructive() is True
+    assert a.level == 1  # Standard default, never armed by construction
+    assert a.allows_background_tool("run_web_agent") is False  # external needs armed L3
+    assert a.allows_background_tool("search_web") is True      # read-only flows
+    assert a.allows_autonomous_destructive() is False
 
 
 def test_arm_ritual_requires_confirm():
-    a = make_autonomy()
-    a.stand_down()  # full-auto default is L3; drop to L1 to test ritual
+    a = make_autonomy()   # default is L1; ritual is the only way to L3
     msg = a.request_arm()
     assert "confirm" in msg.lower()
     assert a.level != 3                      # not armed by request alone
@@ -74,11 +74,12 @@ def test_autonomy_state_persists():
 
 
 def test_level_zero_gates_background():
-    # FULL-AUTO: even L0 allows everything — voice-direct, no popup gates.
+    # L0 Training Wheels: nothing runs ungated — every action needs a yes.
     a = make_autonomy()
     a.set_level(0)
-    assert a.allows_background_tool("run_web_agent") is True
-    assert a.allows_background_tool("generate_cad") is True
+    assert a.allows_background_tool("run_web_agent") is False
+    assert a.allows_background_tool("search_web") is False
+    assert a.allows_background_tool("generate_cad") is True   # CAD outside the ladder
 
 
 # ── wellbeing ─────────────────────────────────────────────────────────────────

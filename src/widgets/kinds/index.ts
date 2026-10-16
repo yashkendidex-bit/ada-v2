@@ -5,9 +5,10 @@ import { SCENE } from "./scene";
 import { MODEL } from "./model3d";
 import { HUD } from "./hud";
 import { CODE } from "./code";
+import { TRUST_CONSOLE } from "../trust-console";
 
 /** Every widget kind the screen can draw. Anything else she asks for is ignored. */
-export const KINDS: Record<string, KindSpec> = { ...DIALS, ...PANELS, ...SCENE, ...MODEL, ...HUD, ...CODE };
+export const KINDS: Record<string, KindSpec> = { ...DIALS, ...PANELS, ...SCENE, ...MODEL, ...HUD, ...TRUST_CONSOLE, ...CODE };
 
 /** Kinds that open inside the orb unless she gives a slot. Same list as backend/widgets.py. */
 export const INNER_KINDS = new Set([

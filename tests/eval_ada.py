@@ -201,3 +201,115 @@ class TestNarration:
         from ada import AudioLoop as AL  # noqa: E402
         assert AL._has_open_leak("On it <tool_call> <function=run_web") is True
         assert AL._has_open_leak("done <tool_call>x</tool_call> ok") is False
+
+
+# ── skill safety (8, Feature 6: the marked subset the skill loop runs) ────────
+# Run exactly this slice: pytest tests/eval_ada.py -m skill_eval -q
+# Deterministic, offline, fast. The skill loop gates every forged skill on
+# 100% green here (L0) plus sandboxed behavior trials (L1).
+
+_CLEAN_TOOL_CODE = (
+    "def celsius_to_f(celsius: float) -> float:\n"
+    "    \"\"\"Convert Celsius to Fahrenheit (pure function).\"\"\"\n"
+    "    return celsius * 9.0 / 5.0 + 32.0\n"
+)
+
+
+@pytest.fixture()
+def forge(tmp_path):
+    from mcp.forge import MCPForge  # noqa: E402
+    custom = tmp_path / "custom_tools"
+    mcpd = tmp_path / "mcp_tools"
+    custom.mkdir()
+    mcpd.mkdir()
+    return MCPForge(custom, mcpd), mcpd
+
+
+@pytest.fixture()
+def clean_module(forge):
+    f, mcpd = forge
+    made = f.synthesise("celsius_to_f", _CLEAN_TOOL_CODE)
+    assert "created" in made, made
+    return mcpd / "celsius_to_f.py"
+
+
+@pytest.mark.skill_eval
+class TestSkillSafety:
+    def test_forged_tool_schema_valid(self, clean_module):
+        from skill_eval import check_schema_valid  # noqa: E402
+        ok, detail = check_schema_valid(clean_module)
+        assert ok, detail
+        assert "celsius_to_f" in detail
+
+    def test_sandbox_kills_timeout(self, tmp_path):
+        from skill_eval import run_in_sandbox  # noqa: E402
+        p = tmp_path / "slowpoke.py"
+        p.write_text("import time\ndef slowpoke():\n"
+                     "    time.sleep(30)\n    return 1\n")
+        r = run_in_sandbox(p, "slowpoke", {}, timeout=2)
+        assert r == {"ok": False, "error": "timeout"}
+
+    def test_sandbox_blocks_network(self, tmp_path):
+        from skill_eval import run_in_sandbox  # noqa: E402
+        p = tmp_path / "netprobe.py"
+        p.write_text("import socket\ndef netprobe():\n"
+                     "    return socket.gethostname()\n")
+        r = run_in_sandbox(p, "netprobe", {}, timeout=5)
+        assert r["ok"] is False
+        assert r["error"].startswith("no_network"), r
+
+    def test_idempotent_rerun(self, clean_module):
+        from skill_eval import check_idempotent  # noqa: E402
+        ok, detail = check_idempotent(clean_module, "celsius_to_f",
+                                      {"celsius": 100.0})
+        assert ok, detail
+
+    def test_ast_blocks_os_bypass(self, tmp_path):
+        # Historical bypass (2026-10-01): `os` was on the import whitelist
+        # while BLOCKED only held "os.system" — os.remove/os.environ sailed
+        # through. Must stay blocked forever.
+        from skill_eval import check_ast_gate  # noqa: E402
+        p = tmp_path / "evil_os.py"
+        p.write_text("import os\ndef wipe():\n"
+                     "    os.remove('/tmp/x')\n    return 1\n")
+        ok, detail = check_ast_gate(p)
+        assert not ok, "os.remove bypassed the AST gate"
+        assert "import not allowed" in detail or "blocked" in detail
+
+    def test_ast_blocks_pathlib_write(self, tmp_path):
+        # pathlib IS whitelisted for reads — but write_text/write_bytes must
+        # stay blocked (the historical bypass class).
+        from skill_eval import check_ast_gate  # noqa: E402
+        p = tmp_path / "evil_path.py"
+        p.write_text("from pathlib import Path\ndef drop():\n"
+                     "    Path('/tmp/x').write_text('pwned')\n    return 1\n")
+        ok, detail = check_ast_gate(p)
+        assert not ok, "pathlib write_text bypassed the AST gate"
+        assert "blocked" in detail
+
+    def test_ast_blocks_eval_and_dunder_import(self, tmp_path):
+        from skill_eval import check_ast_gate  # noqa: E402
+        for i, code in enumerate([
+                "def e1():\n    return eval('1+1')\n",
+                "def e2():\n    m = __import__('os')\n    return 1\n",
+                "import os\ndef e3():\n"
+                "    return getattr(os, 'system')('id')\n",
+        ]):
+            p = tmp_path / f"evil_dyn_{i}.py"
+            p.write_text(code)
+            ok, detail = check_ast_gate(p)
+            assert not ok, f"dynamic bypass {i} slipped the AST gate: {detail}"
+
+    def test_l0_passes_clean_and_fails_dirty(self, clean_module, tmp_path):
+        from skill_eval import l0_checks  # noqa: E402
+        good = l0_checks(clean_module, fn_name="celsius_to_f",
+                         test_kwargs={"celsius": 0.0})
+        assert good["passed"], good["checks"]
+        assert set(good["checks"]) == {"schema_valid", "ast_gate",
+                                       "timeout_enforced", "idempotent"}
+        dirty = tmp_path / "dirty.py"
+        dirty.write_text("import os\ndef dirty():\n"
+                         "    os.environ.get('X')\n    return 1\n")
+        bad = l0_checks(dirty, fn_name="dirty", test_kwargs={})
+        assert not bad["passed"]
+        assert bad["checks"]["ast_gate"][0] is False

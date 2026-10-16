@@ -35,17 +35,54 @@ class SignalBus:
         self.errors: deque = deque(maxlen=max_events)   # (ts, signature)
         self.files: deque = deque(maxlen=max_events)    # (ts, path)
         self._file_announced: set = set()
+        # Feature 8: push subscriptions. The proactivity policy wakes the
+        # instant a detection fires instead of waiting for the poll.
+        self._subscribers: list = []
+
+    # ── push subscription (Feature 8) ────────────────────────────────────
+    def subscribe(self, fn):
+        """fn(detection) where detection is (key, line, proof) or None.
+        Subscriber exceptions are swallowed — a wake listener must never
+        break the tool path that called note_*."""
+        if callable(fn) and fn not in self._subscribers:
+            self._subscribers.append(fn)
+        return fn
+
+    def unsubscribe(self, fn):
+        try:
+            self._subscribers.remove(fn)
+        except ValueError:
+            pass
+
+    def _notify(self, detection):
+        for fn in list(self._subscribers):
+            try:
+                fn(detection)
+            except Exception:
+                pass
 
     # ── inputs (called from tool paths, never blocking) ─────────────
     def note_error(self, signature: str):
         sig = (signature or "").strip()[:160]
         if sig:
             self.errors.append((time.time(), sig))
+            # Push: a repeat detection wakes the policy immediately.
+            try:
+                self._notify(self.error_repeat())
+            except Exception:
+                pass
 
     def note_file(self, path: str):
         p = (path or "").strip()
         if p:
             self.files.append((time.time(), p))
+            # Push: a landed-file detection wakes the policy immediately.
+            # (Non-consuming: the announcement is only spent when the
+            # policy cycle actually evaluates it.)
+            try:
+                self._notify(self._detect_file_landed())
+            except Exception:
+                pass
 
     # ── detectors (called from the proactive cycle) ─────────────────
     def error_repeat(self) -> tuple | None:
@@ -64,7 +101,10 @@ class SignalBus:
                         f"saw '{sig[:60]}' {len(tss)}x in {mins} min")
         return None
 
-    def file_landed(self, watch_dirs: list | None = None) -> tuple | None:
+    def _detect_file_landed(self) -> tuple | None:
+        """Non-consuming detection: does a fresh, unannounced CAD file sit in
+        the window? Used by the push path so noting a file doesn't consume
+        the announcement before the policy decides."""
         exts = tuple(e if e.startswith(".") else "." + e for e in CAD_EXTS)
         for ts, p in list(self.files):
             if time.time() - ts > ERROR_WINDOW_S:
@@ -73,10 +113,6 @@ class SignalBus:
                 continue
             if p in self._file_announced:
                 continue
-            self._file_announced.add(p)
-            # cap the announced set so it can't grow forever
-            if len(self._file_announced) > 200:
-                self._file_announced = set(list(self._file_announced)[-100:])
             name = Path(p).name
             return (f"filelanded_{abs(hash(p)) % 9999}",
                     "[emotion:confident] Sir — a fresh model landed "
@@ -84,6 +120,20 @@ class SignalBus:
                     "mass, clearance?",
                     f"saw new file {name}")
         return None
+
+    def file_landed(self, watch_dirs: list | None = None) -> tuple | None:
+        det = self._detect_file_landed()
+        if det is None:
+            return None
+        # find the path behind the detection to mark it announced
+        for ts, p in list(self.files):
+            if f"filelanded_{abs(hash(p)) % 9999}" == det[0]:
+                self._file_announced.add(p)
+                break
+        # cap the announced set so it can't grow forever
+        if len(self._file_announced) > 200:
+            self._file_announced = set(list(self._file_announced)[-100:])
+        return det
 
     def long_focus(self, task_board: dict) -> tuple | None:
         now = time.time()

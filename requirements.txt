@@ -37,3 +37,8 @@ httpx
 # Override the model with ADA_EMBED_MODEL (e.g. BAAI/bge-base-en-v1.5).
 fastembed
 
+
+# MCP-native tool forge (Feature 2) — the canonical `mcp` PyPI SDK
+# (NOT the standalone `fastmcp` package). Code targets the installed v2 API
+# (`mcp.server.mcpserver.MCPServer`, Streamable HTTP). Localhost-only.
+mcp>=1.0

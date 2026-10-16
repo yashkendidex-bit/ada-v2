@@ -35,28 +35,43 @@ def _is_recall_question(text: str) -> bool:
 
 
 class SensoryRing:
-    def __init__(self, audio_s: int = 30, screen_s: int = 60, max_frames: int = 5):
+    def __init__(self, audio_s: int = 30, screen_s: int = 60, max_frames: int = 5,
+                 timeline=None):
         self.audio_s = audio_s
         self.screen_s = screen_s
+        self.timeline = timeline  # optional bridge: ring events also flow into
+                                  # the perception timeline (honors tier; tier 0 = ring only)
         self._audio: deque = deque(maxlen=20)   # (ts, text)
         self._screen: deque = deque(maxlen=20)  # (ts, text)
         self._frames: deque = deque(maxlen=max_frames)  # (ts, desc)
+
+    def _forward(self, source: str, type: str, text: str):
+        """One-line bridge: timeline.emit is a safe no-op when unset or tier 0."""
+        tl = self.timeline
+        if tl is not None:
+            try:
+                tl.emit(source, type, {"text": text})
+            except Exception:
+                pass
 
     # ── pushes (called by input paths, never blocking) ──────────────────
     def push_audio(self, text: str):
         text = (text or "").strip()[:300]
         if text:
             self._audio.append((time.time(), text))
+            self._forward("sensor", "ring.audio", text)
 
     def push_screen(self, text: str):
         text = (text or "").strip()[:300]
         if text:
             self._screen.append((time.time(), text))
+            self._forward("sensor", "ring.screen", text)
 
     def push_frame(self, desc: str):
         desc = (desc or "").strip()[:200]
         if desc:
             self._frames.append((time.time(), desc))
+            self._forward("sensor", "ring.frame", desc)
 
     # ── reads ───────────────────────────────────────────────────────────
     def _fresh(self, buf: deque, window_s: int) -> list[str]:
